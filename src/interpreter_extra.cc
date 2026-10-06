@@ -1488,7 +1488,7 @@ static bool scriptGestureRecordBegin(Object* object)
     return true;
 }
 
-static void scriptGestureRecordShip(bool recording, Object* actor)
+static void scriptGestureRecordShip(bool recording, Object* actor, bool queueForActor = true)
 {
     if (!recording) {
         return;
@@ -1499,7 +1499,7 @@ static void scriptGestureRecordShip(bool recording, Object* actor)
             fprintf(stderr, "[gesture] net=%d pid=0x%X: a script's animation shipped (%d ops)\n",
                 actor->netId, actor->pid, presRecordOpCount());
         }
-        presenter()->presSeq(presRecordData(), presRecordSize(), presRecordOpCount(), actor->netId);
+        presenter()->presSeq(presRecordData(), presRecordSize(), presRecordOpCount(), queueForActor ? actor->netId : 0);
     }
 }
 
@@ -3764,7 +3764,10 @@ static void opAnim(Program* program)
                 animationRegisterSetFid(obj, obj->fid, -1);
             }
             reg_anim_end();
-            scriptGestureRecordShip(true, obj);
+            // Standalone reactions use the animation engine's busy checks.
+            // Repeated requests must not become a queue of full replays.
+            bool immediateReaction = frame == 0 && (anim == ANIM_DODGE_ANIM || anim == ANIM_HIT_FROM_FRONT || anim == ANIM_HIT_FROM_BACK);
+            scriptGestureRecordShip(true, obj, !immediateReaction);
         }
     } else if (anim == 1000) {
         if (frame < ROTATION_COUNT) {
