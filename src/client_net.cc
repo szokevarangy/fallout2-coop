@@ -883,6 +883,23 @@ public:
         }
     }
 
+	    // Update HP behind an open inventory without advancing animations.
+    void inventoryHpPump()
+    {
+        if ((GameMode::getCurrentGameMode() & GameMode::kInventory) != 0) {
+            for (auto it = _presQueue.begin(); it != _presQueue.end();) {
+                if (it->kind == PresKind::kDudeHp) {
+                    applyDudeHp(it->hpNetId, it->hpValue);
+                    it = _presQueue.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+
+        rollDudeHp();
+    }
+
     // Ease the viewer's SHOWN dude HP (gDude->hp, the value interfaceRenderHitPoints
     // reads) toward authority (_dudeHpAuth) a fraction per frame, so a hit COUNTS the
     // counter down instead of snapping — vanilla rolls it; our decoder hard-set it
@@ -5445,7 +5462,7 @@ public:
     bool inCombat() const { return _decoder.inCombat(); }
     bool myTurn() const { return _decoder.myTurn(); }
     void presentationPump() { _decoder.presentationPump(); }
-    void hudPump() { _decoder.rollDudeHp(); }
+    void hudPump() { _decoder.inventoryHpPump(); }
     void recomputeCombatOutlines() { _decoder.recomputeCombatOutlines(); }
     bool everBoundToSlot() const { return _decoder.everBoundToSlot(); }
     bool combatPresentationBusy() const { return _decoder.combatPresentationBusy(); }
