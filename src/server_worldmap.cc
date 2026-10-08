@@ -1,4 +1,5 @@
 #include "server_worldmap.h"
+#include "server_loop.h"
 
 #include <cstdio>
 #include <vector>
@@ -511,6 +512,13 @@ int worldmapServerDriver()
         wmTransitionSuspendScripts();
 
         mapLoadById(map);
+        if (map == MAP_IN_GAME_MOVIE1) {
+            // Horrigan's worldmap-triggered scene is a party cutscene. Broadcast the
+            // lock after the movie map exists so every connected player loses movement,
+            // combat and interaction input until the next map transition releases it.
+            // actorNetId=0 deliberately means all viewers.
+            serverUiLockSet(true, 0);
+        }
         // ►► NOW that emissions are live again, say what this place is. The line is
         // built by wmSetupRandomEncounter INSIDE the load, where the network presenter
         // drops every console message, so co-op players used to arrive in a random
