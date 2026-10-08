@@ -8,6 +8,8 @@ namespace fallout {
 
 // Addiction identity is separate from the delayed withdrawal stat effects.
 void itemInitializePlayerAddictions(Object* actor);
+// Admin/debug: 1 = scheduled immediate withdrawal, 0 = already addicted, -1 = error.
+int itemForceAddiction(Object* actor, int drugPid);
 bool itemIsAddictedByGvar(Object* actor, int gvar);
 
 typedef enum AttackType {

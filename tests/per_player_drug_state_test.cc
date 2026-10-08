@@ -49,6 +49,14 @@ int queueAddEvent(int delay, Object* obj, void* data, int type) {
  free(data); return 0;
 }
 
+bool critterIsDead(Object* actor) { return (actor->data.critter.combat.results & DAM_DEAD) != 0; }
+static Proto testProto;
+int protoGetProto(int pid, Proto** result) {
+ testProto.item.type=ITEM_TYPE_DRUG;
+ testProto.item.data.drug.withdrawalEffect=PERK_JET_ADDICTION;
+ *result=&testProto; return 0;
+}
+
 }
 int main() {
  using namespace fallout;
@@ -119,5 +127,17 @@ int main() {
  effects[&actors[1]]=1;
  assert(clearJetWithdrawal(&actors[1],&jetActive)==1);
  assert(effects[&actors[1]]==0 && effects[&actors[2]]==0);
- puts("PASS: independent addiction state, multiple addictions, alcohol grouping, legacy migration, viewer reads, withdrawal effects, map-exit preservation, Jet cure callback");
+
+ flags[&actors[1]]=0;
+ events.clear();
+ assert(itemForceAddiction(&actors[1],PROTO_ID_JET)==1);
+ assert(events.size()==1 && events[0].owner==&actors[1]);
+ assert(events[0].event.field_0==1 && events[0].event.perk==PERK_JET_ADDICTION);
+ assert(dudeIsAddicted(&actors[1],PROTO_ID_JET));
+ assert(itemForceAddiction(&actors[1],PROTO_ID_JET)==0);
+ assert(events.size()==1);
+ assert(itemForceAddiction(&actors[1],-123)==-1);
+ actors[2].data.critter.combat.results |= DAM_DEAD;
+ assert(itemForceAddiction(&actors[2],PROTO_ID_JET)==-1);
+ puts("PASS: independent addiction state, multiple addictions, alcohol grouping, legacy migration, viewer reads, withdrawal effects, map-exit preservation, Jet cure callback, admin addiction scheduling/idempotence");
 }
