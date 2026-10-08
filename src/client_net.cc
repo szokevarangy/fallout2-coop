@@ -1716,7 +1716,10 @@ private:
             if (gDude->elevation != gElevation) {
                 mapSetElevation(gDude->elevation);
             }
-            tileSetCenter(gDude->tile, TILE_SET_CENTER_REFRESH_WINDOW);
+            // Follow the existing Home-key camera path: a direct jump can
+            // land beyond a map's scroll-blocker boundary and trap the view
+            // on its outer side. Stop at the first blocked intermediate tile.
+            _tile_scroll_to(gDude->tile, 0x02);
         }
 
         debugPrint("client_net: session %d bound to actor netId %d\n", _mySessionId,
@@ -1933,7 +1936,10 @@ private:
             if (gDude->elevation != gElevation) {
                 mapSetElevation(gDude->elevation);
             }
-            tileSetCenter(gDude->tile, TILE_SET_CENTER_REFRESH_WINDOW);
+            // Follow the existing Home-key camera path: a direct jump can
+            // land beyond a map's scroll-blocker boundary and trap the view
+            // on its outer side. Stop at the first blocked intermediate tile.
+            _tile_scroll_to(gDude->tile, 0x02);
         }
 
         _loaded = true;
