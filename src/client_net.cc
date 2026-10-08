@@ -2282,6 +2282,18 @@ private:
         bool run = r.remaining() >= 4 ? (r.i32() != 0) : false;
         Object* obj = lookup(netId);
         if (obj != nullptr) {
+            // _dude_stand re-buckets a revived patient at its existing tile. This
+            // zero-distance MOVE must not cancel the reserved get-up sequence and
+            // release its final standing pose before the reviver's gesture ends.
+            // Hold only a zero-duration refresh of the object's current location;
+            // actual relocations and ordinary movement keep their existing path.
+            if (clientViewerActive() && durMs <= 0
+                && fromTile == toTile && fromElev == toElev
+                && obj->tile == toTile && obj->elevation == toElev
+                && clientCombatAnimDeferSnapMove(obj, toTile, toElev)) {
+                return;
+            }
+
             // In-combat recorded MOVE: this mover's walk is being replayed from the record
             // channel, which owns its motion. HOLD the authoritative position (applied at
             // walk completion, resolveHeld) — do NOT snap/glide/kMoveRelease/notifyReposition
