@@ -1657,7 +1657,9 @@ private:
         if (previousDude != nullptr
             && critterGetBaseStat(previousDude, STAT_GENDER) != critterGetBaseStat(gDude, STAT_GENDER)) {
             _proto_dude_update_gender();
-            objectSetFrame(gDude, 0, nullptr);
+            if (!critterIsDead(gDude)) {
+                objectSetFrame(gDude, 0, nullptr);
+            }
         }
 
         // The hit point counter rolls the SHOWN value toward _dudeHpAuth (rollDudeHp),
@@ -4623,7 +4625,9 @@ private:
                 // as onMovieSeenState.
                 if (critterGetBaseStat(gDude, STAT_GENDER) != genderBefore) {
                     _proto_dude_update_gender();
-                    objectSetFrame(gDude, 0, nullptr);
+                    if (!critterIsDead(gDude)) {
+                        objectSetFrame(gDude, 0, nullptr);
+                    }
                     tileWindowRefresh();
                 }
             }
@@ -4751,7 +4755,9 @@ private:
         // past the new art's count and render nothing (frame-index-render-gotcha), so
         // reset it. Then repaint — this arrives async off the wire.
         _proto_dude_update_gender();
-        objectSetFrame(gDude, 0, nullptr);
+        if (!critterIsDead(gDude)) {
+            objectSetFrame(gDude, 0, nullptr);
+        }
         tileWindowRefresh();
     }
 
