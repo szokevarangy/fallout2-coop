@@ -563,7 +563,8 @@ static void interactionFireBody(int verb, Object* actor, Object* target, int arg
             preQty, interactionCarriedQty(actor, prePid));
         break;
     }
-    case kInteractSkill:
+    case kInteractSkill: {
+        PresenterFeedbackScope feedback(actor->netId);
         // In combat this is a REFUSAL for seven of the eight skilldex skills —
         // actionUseSkill answers first aid / doctor / lockpick / steal / traps /
         // science / repair with proto msg 902 ("you cannot use that skill in
@@ -573,6 +574,7 @@ static void interactionFireBody(int verb, Object* actor, Object* target, int arg
         // all. Sneak is the exception and toggles as normal (actions.cc:1760).
         actionUseSkill(actor, target, arg);
         break;
+    }
     case kInteractTalk:
         // _talk_to's body: latch a dialog request consumed by scriptsHandleRequests
         // this same tick. actionTalk itself cannot be used — its outcome rides a
