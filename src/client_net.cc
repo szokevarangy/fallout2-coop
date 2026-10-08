@@ -1945,6 +1945,16 @@ private:
         // order; it is idempotent.
         rebindLocalActor();
 
+        // A reload can keep the same local actor (especially slot 0), in which
+        // case rebindLocalActor returns without updating the camera. Center once
+        // the new world and local actor are available, just like the Home key.
+        if (clientViewerActive() && gDude != nullptr && gDude->tile >= 0) {
+            if (gDude->elevation != gElevation) {
+                mapSetElevation(gDude->elevation);
+            }
+            tileSetCenter(gDude->tile, TILE_SET_CENTER_REFRESH_WINDOW);
+        }
+
         _loaded = true;
         _loadCount++;
         _muteOldWorld = false; // the new world is up: its sounds and floats are welcome
