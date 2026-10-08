@@ -3335,6 +3335,29 @@ static bool dudeIsAddicted(Object* actor, int drugPid)
     return false;
 }
 
+int itemForceAddiction(Object* actor, int drugPid)
+{
+    if (!playerActorIs(actor) || critterIsDead(actor)
+        || drugGetAddictionGvarByPid(drugPid) == -1) {
+        return -1;
+    }
+    if (dudeIsAddicted(actor, drugPid)) {
+        return 0;
+    }
+    Proto* proto = nullptr;
+    if (protoGetProto(drugPid, &proto) == -1 || proto == nullptr
+        || proto->item.type != ITEM_TYPE_DRUG) {
+        return -1;
+    }
+    // Use the ordinary event handler for penalties, duration and recovery. No
+    // drug benefits, item consumption, addiction roll or repeated stat stacking.
+    if (_insert_withdrawal(actor, 1, 0, proto->item.data.drug.withdrawalEffect, drugPid) == -1) {
+        return -1;
+    }
+    dudeSetAddiction(actor, drugPid);
+    return 1;
+}
+
 static int clearJetWithdrawal(Object* actor, void* data)
 {
     auto* event = static_cast<WithdrawalEvent*>(data);

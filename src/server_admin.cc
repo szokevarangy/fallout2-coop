@@ -1,6 +1,8 @@
 #include "server_admin.h"
 
 #include <chrono>
+#include <cerrno>
+#include <climits>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -135,6 +137,40 @@ static const char* splitVerb(const char* line, char* verbOut, size_t verbSize)
     }
     return skipBlanks(p + n);
 }
+
+// Strict decimal arguments: reject missing/trailing tokens and integer overflow.
+static bool parseStateArgs(const char* text, int& slot, int& value)
+{
+    if (text == nullptr) return false;
+    char* end = nullptr;
+    errno = 0;
+    long first = strtol(text, &end, 10);
+    if (end == text || errno == ERANGE || first < 0 || first > INT_MAX
+        || (*end != ' ' && *end != '\t')) return false;
+    text = skipBlanks(end);
+    if (text == nullptr) return false;
+    errno = 0;
+    long second = strtol(text, &end, 10);
+    if (end == text || errno == ERANGE || second < INT_MIN || second > INT_MAX
+        || skipBlanks(end) != nullptr) return false;
+    slot = static_cast<int>(first);
+    value = static_cast<int>(second);
+    return true;
+}
+
+static const int kAdminAddictionPids[] = {
+    PROTO_ID_BUFF_OUT, PROTO_ID_MENTATS, PROTO_ID_PSYCHO, PROTO_ID_JET,
+    PROTO_ID_RADAWAY, PROTO_ID_NUKA_COLA, PROTO_ID_BEER, PROTO_ID_DECK_OF_TRAGIC_CARDS,
+};
+static const char* kAdminAddictionNames[] = {
+    "Buffout", "Mentats", "Psycho", "Jet", "RadAway", "Nuka-Cola", "Alcohol", "Tragic",
+};
+static const int kAdminInjuryFlags[] = {
+    DAM_CRIP_ARM_LEFT, DAM_CRIP_ARM_RIGHT, DAM_CRIP_LEG_LEFT, DAM_CRIP_LEG_RIGHT, DAM_BLIND,
+};
+static const char* kAdminInjuryNames[] = {
+    "crippled left arm", "crippled right arm", "crippled left leg", "crippled right leg", "blindness",
+};
 
 // Operator-facing slot numbers are 1-based (SLOT01 is "1") because that is what
 // the directory names say; every API below wants 0-based. Returns -1 if `text`
@@ -721,6 +757,12 @@ static void writeHelp(const std::function<void(const char* text)>& reply, bool w
     reply("  revive <slot>         revive a dead player at 1 HP (no-op if not dead)");
     reply("  kill <slot>           kill a player (tests the revive and party-wipe rules)");
     reply("  xp <slot> <amount>    award experience to one seat (levels come with it)");
+    reply("  poison <slot> <delta> add poison (resistance applies; resulting poison must be <=100)");
+    reply("  rads <slot> <delta>   add radiation (resistance applies; delta -100000..100000)");
+    reply("  addict <slot> <code>  force addiction + immediate withdrawal; repeated use is a no-op");
+    reply("    codes: 1 Buffout, 2 Mentats, 3 Psycho, 4 Jet, 5 RadAway, 6 Nuka-Cola, 7 Alcohol, 8 Tragic");
+    reply("  injury <slot> <code>  add injury: 1 left arm, 2 right arm, 3 left leg, 4 right leg, 5 blindness");
+    reply("    player slots: 0 host, 1 player 2, etc.; negative poison/rads deltas remove levels");
     reply("  partyxp <slot> <amt>  award it the way play does: everyone playing is paid");
     reply("  sheet [slot]          level/xp/unspent points/owed perk/tags/traits per seat");
     reply("  rest <minutes> [slot] pass time for EVERYONE and heal every player");
@@ -1286,6 +1328,82 @@ bool serverAdminLine(const char* line,
         }
         snprintf(msg, sizeof(msg), "gvar %d = %d", index, gameGetGlobalVar(index));
         reply(msg);
+        return true;
+    }
+    if (strcmp(verb, "poison") == 0 || strcmp(verb, "rads") == 0
+        || strcmp(verb, "addict") == 0 || strcmp(verb, "injury") == 0) {
+        if (!worldLoaded) {
+            reply("status: no world loaded");
+            return true;
+        }
+        int slot;
+        int value;
+        if (!parseStateArgs(rest, slot, value)) {
+            reply("usage: poison/rads <player slot> <delta> OR addict/injury <player slot> <code> (see help)");
+            return true;
+        }
+        if (slot >= playerActorCount() || playerActorAt(slot) == nullptr) {
+            reply("status: player slot is out of range or empty (0 = host)");
+            return true;
+        }
+        Object* actor = playerActorAt(slot);
+        if (critterIsDead(actor)) {
+            reply("status: player is dead; revive them first");
+            return true;
+        }
+        ServerActorScope actorScope(actor);
+        if (strcmp(verb, "poison") == 0 || strcmp(verb, "rads") == 0) {
+            if (value < -100000 || value > 100000) {
+                reply("status: delta must be between -100000 and 100000");
+                return true;
+            }
+            bool poison = strcmp(verb, "poison") == 0;
+            int before = poison ? critterGetPoison(actor) : critterGetRadiation(actor);
+            if (value > 0) {
+                int resistance = critterGetStat(actor, poison ? STAT_POISON_RESISTANCE : STAT_RADIATION_RESISTANCE);
+                long long after = static_cast<long long>(before) + value
+                    - static_cast<long long>(value) * resistance / 100;
+                // The vanilla poison interval is 10 * (505 - 5 * level).
+                // Do not allow a debug command to create a zero/negative timer.
+                if (after > (poison ? 100 : INT_MAX)) {
+                    reply("status: resulting level too high (poison max 100)");
+                    return true;
+                }
+            }
+            if (value != 0) {
+                if (poison) {
+                    critterAdjustPoison(actor, value);
+                    if (critterGetPoison(actor) == 0) {
+                        queueRemoveEventsByType(actor, EVENT_TYPE_POISON);
+                    }
+                } else {
+                    critterAdjustRadiation(actor, value);
+                }
+            }
+            int after = poison ? critterGetPoison(actor) : critterGetRadiation(actor);
+            snprintf(msg, sizeof(msg), "%s: player %d (%s): %d -> %d",
+                verb, slot, critterGetName(actor), before, after);
+            reply(msg);
+        } else if (strcmp(verb, "addict") == 0) {
+            if (value < 1 || value > 8) {
+                reply("addict: code must be 1..8; see help");
+                return true;
+            }
+            int result = itemForceAddiction(actor, kAdminAddictionPids[value - 1]);
+            snprintf(msg, sizeof(msg), "addict: player %d, %s: %s", slot,
+                kAdminAddictionNames[value - 1], result > 0 ? "withdrawal scheduled for next tick"
+                    : result == 0 ? "already addicted; unchanged" : "could not apply addiction");
+            reply(msg);
+        } else {
+            if (value < 1 || value > 5) {
+                reply("injury: code must be 1..5; see help");
+                return true;
+            }
+            actor->data.critter.combat.results |= kAdminInjuryFlags[value - 1];
+            snprintf(msg, sizeof(msg), "injury: player %d (%s): %s", slot,
+                critterGetName(actor), kAdminInjuryNames[value - 1]);
+            reply(msg);
+        }
         return true;
     }
     if (strcmp(verb, "xp") == 0) {
