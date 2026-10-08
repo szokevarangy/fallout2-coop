@@ -25,5 +25,18 @@ int main()
     assert(kAdminAddictionPids[3] == PROTO_ID_JET);
     assert(kAdminInjuryFlags[0] == DAM_CRIP_ARM_LEFT);
     assert(kAdminInjuryFlags[4] == DAM_BLIND);
+    int pid = 0;
+    int count = 0;
+    assert(parseGiveArgs("1 40", slot, pid, count) && slot == 1 && pid == 40 && count == 1);
+    assert(parseGiveArgs("2 0x28 10", slot, pid, count) && slot == 2 && pid == 40 && count == 10);
+    assert(parseGiveArgs("0 008 2", slot, pid, count) && pid == 8 && count == 2);
+    assert(!parseGiveArgs(nullptr, slot, pid, count));
+    assert(!parseGiveArgs("1", slot, pid, count));
+    assert(!parseGiveArgs("1 40 0", slot, pid, count));
+    assert(!parseGiveArgs("1 40 -2", slot, pid, count));
+    assert(!parseGiveArgs("1 40 10001", slot, pid, count));
+    assert(!parseGiveArgs("1 40 2 garbage", slot, pid, count));
+    assert(!parseGiveArgs("1 40x", slot, pid, count));
+    assert(!parseGiveArgs("1 99999999999999999999999", slot, pid, count));
     puts("PASS: status command argument validation and code mapping");
 }
