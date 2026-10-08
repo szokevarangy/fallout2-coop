@@ -510,6 +510,12 @@ int worldmapServerDriver()
         wmTransitionResumeScripts();
         wmTransitionSaveMap();
         wmTransitionSuspendScripts();
+		
+		if (map == MAP_IN_GAME_MOVIE1) {
+			// This map was staged through encounterMapId only to leave the worldmap loop.
+			// Do not let the loader treat it as a random encounter.
+			wmEncounterStagingClear();
+		}
 
         mapLoadById(map);
         if (map == MAP_IN_GAME_MOVIE1) {
@@ -525,7 +531,9 @@ int worldmapServerDriver()
         // encounter with no word about what they had walked into — single player says
         // "You have encountered: some radscorpions fighting some cannibals" and we said
         // nothing. No-op for an ordinary city arrival.
-        wmEncounterDescriptionFlush();
+        if (map != MAP_IN_GAME_MOVIE1) {
+			wmEncounterDescriptionFlush();
+		}
         fprintf(stderr, "[wmsrv] entered map=%d elev=%d dudeTile=%d gen=%d\n",
             mapGetCurrentMap(), gElevation,
             gDude != nullptr ? gDude->tile : -1, mapGetLoadGeneration());
