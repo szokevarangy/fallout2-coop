@@ -200,6 +200,9 @@ static int wmWorldMapFunc(int a1)
         return -1;
     }
 
+    // Open at the current party position instead of the last scrolled view.
+    // Initialization (including its network pumping) has completed at this point.
+    wmInterfaceCenterOnParty();
     wmFadeIn();
 
     wmMatchWorldPosToArea(wmGenData.worldPosX, wmGenData.worldPosY, &(wmGenData.currentAreaId));
