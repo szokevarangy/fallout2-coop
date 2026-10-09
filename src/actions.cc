@@ -1015,6 +1015,12 @@ int _action_ranged(Attack* attack, int anim)
                     // bullets, where the tail never reads it.
                     if (anim == ANIM_THROW_ANIM) {
                         weaponFid = weapon->fid;
+                        // Consumption happens later on the state arm. Preview its
+                        // replacement now so the recorded tail draws the next weapon
+                        // instead of leaving the viewer empty-handed.
+                        if (presRecordActive()) {
+                            replacedWeapon = itemReplacementAfterUse(attack->attacker, weapon);
+                        }
                     }
                     objectCreateWithFidPid(&projectile, projectileProto->fid, -1);
 
