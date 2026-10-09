@@ -6402,7 +6402,7 @@ static void viewerServiceTicker()
     }
     gViewerConn->presentationTick(); // start/advance queued replays, drain the queue
     presAdvance(); // glides, reg_anim sequences, reaping
-    if (isoIsDisabled() && presentBehindScreen) {
+    if (presentBehindScreen) {
         // Glides update frames and offsets without requesting dirty-rect redraws.
         // The main loop normally repaints them, but it is blocked inside the modal.
         // Window clipping keeps the menu visible above the refreshed world.
