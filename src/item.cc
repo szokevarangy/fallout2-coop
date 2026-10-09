@@ -1135,7 +1135,12 @@ Object* itemReplacementAfterUse(Object* owner, Object* item)
             if (entry->quantity <= 1) {
                 continue;
             }
-            // itemRemove splits a stack before clearing the consumed item's flags.
+            // itemRemove copies the remaining stack BEFORE clearing the thrown
+            // item's equip flags. That copy remains in hand even if itemReplace
+            // finds nothing, so the recorded throw must still draw its weapon.
+            if ((candidate.flags & OBJECT_IN_ANY_HAND) != 0) {
+                return entry->item;
+            }
         }
         if (_item_identical(&candidate, &consumed)) {
             return entry->item;
