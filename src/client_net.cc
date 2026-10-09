@@ -1120,6 +1120,10 @@ public:
             }
             case PresKind::kRecordedSeq:
                 animDiagnostic("client-seq-play", lookup(ev.seqActorNetId), (int)ev.seqOps.size());
+                for (int target : ev.seqPickupTargets) {
+                    animDiagnostic("pickup-target-play", lookup(target), target, ev.seqPickupActor,
+                        (int)ev.seqOps.size());
+                }
                 presPlayRecordedSeq(ev.seqOps.data(), (int)ev.seqOps.size(), true);
                 releasePickupSequence(ev);
                 for (int ref : ev.seqReserved) {
@@ -1562,7 +1566,10 @@ private:
 
     void releasePickupSequence(const PresEvent& e)
     {
-        for (int target : e.seqPickupTargets) releasePickupRef(_pendingPickupTargets, target);
+        for (int target : e.seqPickupTargets) {
+            animDiagnostic("pickup-target-release", lookup(target), target, e.seqPickupActor, (int)_presQueue.size());
+            releasePickupRef(_pendingPickupTargets, target);
+        }
         if (e.seqPickupActor != 0) releasePickupRef(_pendingPickupActors, e.seqPickupActor);
     }
 
@@ -1598,11 +1605,13 @@ private:
         size_t len = r.remaining();
         Reader peek(payload, len);
         int netId = peek.i32();
+        animDiagnostic("pickup-state-recv", lookup(netId), netId, type, (int)entryId);
         bool pickupTarget = _pendingPickupTargets.count(netId) != 0;
         bool pickupInventory = type == EVENT_OBJECT_DELTA
             && _pendingPickupActors.count(netId) != 0
             && (peek.u16() & OBJECT_DELTA_INVENTORY) != 0;
         if (peek.overflow() || (!presEntangled(netId) && !pickupTarget && !pickupInventory)) {
+            animDiagnostic("pickup-state-immediate", lookup(netId), netId, type, (int)entryId);
             return false;
         }
         PresEvent e;
@@ -1624,6 +1633,10 @@ private:
                 }
             }
         }
+        animDiagnostic("pickup-state-park", lookup(netId), netId, type, (int)entryId);
+        animDiagnostic("pickup-state-gate", lookup(e.defNetId), netId,
+            (pickupTarget ? 1 : 0) | (pickupInventory ? 2 : 0) | (presEntangled(netId) ? 4 : 0),
+            (int)_presQueue.size());
         if (getenv("F2_TRACE_EVENTS") != nullptr) {
             fprintf(stderr, "[adopt] PARK type=%d net=%d bytes=%d pendingMints=%d live=%d queued=%d\n",
                 (int)type, netId, (int)len,
@@ -2279,6 +2292,8 @@ private:
     void onSpawn(Reader& r)
     {
         int netId = r.i32();
+        animDiagnostic("pickup-apply-onConnect", lookup(netId), netId,
+            _applyingDeferredEvent ? 1 : 0, (int)_lastEntryId);
         int pid = r.i32();
         int tile = r.i32();
         int elev = r.i32();
@@ -2311,6 +2326,8 @@ private:
     void onMove(Reader& r)
     {
         int netId = r.i32();
+        animDiagnostic("pickup-apply-onMove", lookup(netId), netId,
+            _applyingDeferredEvent ? 1 : 0, (int)_lastEntryId);
         int fromTile = r.i32();
         int toTile = r.i32();
         int fromElev = r.i32();
@@ -2448,6 +2465,8 @@ private:
     void onDestroy(Reader& r)
     {
         int netId = r.i32();
+        animDiagnostic("pickup-apply-onDestroy", lookup(netId), netId,
+            _applyingDeferredEvent ? 1 : 0, (int)_lastEntryId);
         r.i32(); // pid
         Object* obj = lookup(netId);
         if (obj != nullptr) {
@@ -2613,6 +2632,8 @@ private:
     void onDisconnect(Reader& r)
     {
         int netId = r.i32();
+        animDiagnostic("pickup-apply-onDisconnect", lookup(netId), netId,
+            _applyingDeferredEvent ? 1 : 0, (int)_lastEntryId);
         r.i32(); // pid
         Object* obj = lookup(netId);
         if (clientViewerActive() && getenv("F2_TRACE_EVENTS") != nullptr) {
@@ -2684,6 +2705,8 @@ private:
     void onObjectDelta(Reader& r)
     {
         int netId = r.i32();
+        animDiagnostic("pickup-apply-onObjectDelta", lookup(netId), netId,
+            _applyingDeferredEvent ? 1 : 0, (int)_lastEntryId);
         unsigned int mask = r.u16();
         // Field order MUST match presenter_network.cc objectDelta (bit order).
         int fid = 0, rot = 0, hp = 0, rad = 0, poison = 0, ap = 0, results = 0;
@@ -2722,6 +2745,9 @@ private:
                 wi.ammoQuantity = r.i32();
                 wi.ammoTypePid = r.i32();
                 invItems.push_back(wi);
+                animDiagnostic("pickup-inventory-entry", lookup(wi.netId), wi.netId, netId, wi.quantity);
+                animDiagnostic("pickup-inventory-flags", lookup(wi.netId), wi.netId, (int)wi.flags,
+                    _applyingDeferredEvent ? 1 : 0);
             }
         }
         // FRAME then LIGHT (bits 9,10), after the variable-length inventory — matches the writer.
@@ -4169,6 +4195,8 @@ private:
                     reserveSeqRef(ref);
                     clientCombatAnimArmMoveHold(lookup(ref)); // hold the MOVER only (not the target)
                     Object* target = lookup(targetRef);
+                    animDiagnostic("pickup-target-decode", target, targetRef, ref,
+                        target != nullptr && target->owner != nullptr ? target->owner->netId : 0);
                     if (target != nullptr && FID_TYPE(target->fid) == OBJ_TYPE_ITEM
                         && target->owner == nullptr && target->tile >= 0
                         && std::find(_seqPickupTargetIds.begin(), _seqPickupTargetIds.end(), targetRef) == _seqPickupTargetIds.end()) {
@@ -4284,7 +4312,10 @@ private:
             if (actorNetId != 0 && !_seqPickupTargetIds.empty()) {
                 e.seqPickupTargets = _seqPickupTargetIds;
                 e.seqPickupActor = actorNetId;
-                for (int target : e.seqPickupTargets) _pendingPickupTargets[target]++;
+                for (int target : e.seqPickupTargets) {
+                    _pendingPickupTargets[target]++;
+                    animDiagnostic("pickup-target-queue", lookup(target), target, actorNetId, (int)_lastEntryId);
+                }
                 _pendingPickupActors[actorNetId]++;
             }
             enqueue(e);
