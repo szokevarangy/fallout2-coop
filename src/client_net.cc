@@ -1985,6 +1985,9 @@ private:
         traitsPlayerActorSeed();
         skillsPlayerActorSeed();
         critterPlayerActorSeedNames();
+        for (int slot = 1; slot < kMaxPlayerActors; slot++) {
+            killsPlayerActorResetSlot(slot);
+        }
 
         playerActorRegister(gDude);
         for (int slot = 1; slot < _blobActorCount; slot++) {
