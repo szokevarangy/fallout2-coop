@@ -263,6 +263,47 @@ static int _sneak_working[kMaxPlayerActors];
 
 // 0x56D780
 static int gKillsByType[KILL_TYPE_COUNT];
+static int gPlayerActorKills[kMaxPlayerActors - 1][KILL_TYPE_COUNT];
+
+static int* killsRowForSlot(int slot)
+{
+    if (slot < 0 || slot >= kMaxPlayerActors) return nullptr;
+    return slot == 0 ? gKillsByType : gPlayerActorKills[slot - 1];
+}
+
+int killsAttackOwnerSlot(Object* attacker, Object* victim)
+{
+    if (attacker == nullptr || attacker == victim || FID_TYPE(attacker->fid) != OBJ_TYPE_CRITTER) {
+        return -1;
+    }
+    int slot = playerActorSlotOf(attacker);
+    if (slot < 0) slot = partyMemberOwnerSlot(attacker);
+    return slot >= 0 && slot < playerActorCount() ? slot : -1;
+}
+
+void killsPlayerActorResetSlot(int slot)
+{
+    int* row = killsRowForSlot(slot);
+    if (row != nullptr) memset(row, 0, sizeof(gKillsByType));
+}
+
+int killsPlayerActorRowWrite(File* stream, int slot)
+{
+    int* row = killsRowForSlot(slot);
+    return row != nullptr ? fileWriteInt32List(stream, row, KILL_TYPE_COUNT) : -1;
+}
+
+int killsPlayerActorRowRead(File* stream, int slot)
+{
+    int* row = killsRowForSlot(slot);
+    int counts[KILL_TYPE_COUNT];
+    if (row == nullptr || fileReadInt32List(stream, counts, KILL_TYPE_COUNT) == -1) return -1;
+    for (int count : counts) {
+        if (count < 0) return -1;
+    }
+    memcpy(row, counts, sizeof(counts));
+    return 0;
+}
 
 // Something with radiation.
 //
@@ -837,28 +878,26 @@ int critterGetDamageType(Object* obj)
 static int critter_kill_count_clear()
 {
     memset(gKillsByType, 0, sizeof(gKillsByType));
+    memset(gPlayerActorKills, 0, sizeof(gPlayerActorKills));
     return 0;
 }
 
 // 0x42D878
-int killsIncByType(int killType)
+int killsIncByType(int killType, Object* subject)
 {
-    if (killType != -1 && killType < KILL_TYPE_COUNT) {
-        gKillsByType[killType]++;
-        return 0;
-    }
-
-    return -1;
+    Object* actor = subject != nullptr ? subject : gDude;
+    int* row = killsRowForSlot(playerActorSlotOf(actor));
+    if (row == nullptr || killType < 0 || killType >= KILL_TYPE_COUNT) return -1;
+    row[killType]++;
+    playerSheetMarkDirty(actor);
+    return 0;
 }
 
-// 0x42D8A8
-int killsGetByType(int killType)
+// With no explicit subject, the character editor reads the local player's row.
+int killsGetByType(int killType, Object* subject)
 {
-    if (killType != -1 && killType < KILL_TYPE_COUNT) {
-        return gKillsByType[killType];
-    }
-
-    return 0;
+    int* row = killsRowForSlot(playerActorSlotOf(subject != nullptr ? subject : gDude));
+    return row != nullptr && killType >= 0 && killType < KILL_TYPE_COUNT ? row[killType] : 0;
 }
 
 // 0x42D8C0

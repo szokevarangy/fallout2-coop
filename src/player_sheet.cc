@@ -73,6 +73,10 @@ static constexpr int kPlayerActorOwnersMagic = 0x50414F57; // 'PAOW'
 // needs the host's live sheet just as much.
 static bool gPlayerSheetDirty[kMaxPlayerActors] = { false };
 
+// Kill counters are an optional separate block, independent of PSHT row versions.
+static int playerKillsBlockWrite(File* stream, int firstSlot, int count);
+static int playerKillsBlockRead(File* stream, int firstSlot, int count);
+
 // The members, in the order stage 2 seeds them (protoPlayerActorSheetsSeed,
 // perkPlayerActorSeedRanks, pcPlayerActorSeedStats, traitsPlayerActorSeed,
 // skillsPlayerActorSeed, critterPlayerActorSeedNames), plus the v2 tail. Keeping
@@ -176,7 +180,7 @@ int playerSheetBlockWrite(File* stream, int firstSlot)
         }
     }
 
-    return 0;
+    return playerKillsBlockWrite(stream, firstSlot, count);
 }
 
 int playerSheetBlockRead(File* stream)
@@ -218,7 +222,7 @@ int playerSheetBlockRead(File* stream)
         }
     }
 
-    return 0;
+    return playerKillsBlockRead(stream, firstSlot, count);
 }
 
 int playerActorAppendixSave(File* stream)
@@ -512,7 +516,10 @@ static int playerSheetBlockWriteOne(File* stream, int slot)
     if (fileWriteInt32(stream, 1) == -1) {
         return -1;
     }
-    return playerSheetRowWrite(stream, slot);
+    if (playerSheetRowWrite(stream, slot) == -1) {
+        return -1;
+    }
+    return playerKillsBlockWrite(stream, slot, 1);
 }
 
 void playerSheetMarkDirty(Object* critter)
@@ -583,6 +590,72 @@ void playerSheetDeltaEmit()
         fprintf(stderr, "[psht] emit slot=%d len=%d\n", slot, len);
         presenter()->playerSheetDelta(slot, buf.data(), len);
     }
+}
+
+// A separate PKIL block follows the complete sheet block, before the existing
+// disk appendix's PAEV/PAOW sections. This keeps the base and integration row
+// formats untouched; an integration PSH3 row can carry its skill-use tail first.
+static constexpr unsigned int kPlayerKillsBlockMagic = 0x504B494C; // 'PKIL'
+
+static int playerKillsBlockWrite(File* stream, int firstSlot, int count)
+{
+    if (fileWriteInt32(stream, kPlayerKillsBlockMagic) == -1
+        || fileWriteInt32(stream, firstSlot) == -1
+        || fileWriteInt32(stream, count) == -1) {
+        return -1;
+    }
+    for (int slot = firstSlot; slot < firstSlot + count; slot++) {
+        if (killsPlayerActorRowWrite(stream, slot) == -1) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int playerKillsBlockRead(File* stream, int firstSlot, int count)
+{
+    long position = fileTell(stream);
+    if (position < 0) {
+        return -1;
+    }
+    unsigned char bytes[4];
+    size_t read = fileRead(bytes, 1, sizeof(bytes), stream);
+    unsigned int magic = 0;
+    if (read == sizeof(bytes)) {
+        magic = (static_cast<unsigned int>(bytes[0]) << 24)
+            | (static_cast<unsigned int>(bytes[1]) << 16)
+            | (static_cast<unsigned int>(bytes[2]) << 8) | bytes[3];
+    }
+    if (read != 0 && read != sizeof(bytes)) {
+        return -1;
+    }
+    if (read == 0 || magic != kPlayerKillsBlockMagic) {
+        // Older saves/blobs have no PKIL. Return the look-ahead bytes so the
+        // next appendix reader still sees its PAEV header. The vanilla kills
+        // section has already loaded the host's legacy list; keep that row.
+        if (fileSeek(stream, position, SEEK_SET) != 0) {
+            return -1;
+        }
+        for (int slot = firstSlot; slot < firstSlot + count; slot++) {
+            if (slot > 0) {
+                killsPlayerActorResetSlot(slot);
+            }
+        }
+        return 0;
+    }
+    int storedFirstSlot;
+    int storedCount;
+    if (fileReadInt32(stream, &storedFirstSlot) == -1
+        || fileReadInt32(stream, &storedCount) == -1
+        || storedFirstSlot != firstSlot || storedCount != count) {
+        return -1;
+    }
+    for (int slot = firstSlot; slot < firstSlot + count; slot++) {
+        if (killsPlayerActorRowRead(stream, slot) == -1) {
+            return -1;
+        }
+    }
+    return 0;
 }
 
 } // namespace fallout

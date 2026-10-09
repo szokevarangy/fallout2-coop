@@ -6181,6 +6181,11 @@ static void _damage_object(Object* a1, int damage, bool animated, int a4, Object
         return;
     }
 
+    // Attribute this direct attack, never a stale whoHitMe or a shared team.
+    // Non-critter attackers are explosion/script proxies and get no kill credit.
+    int killSlot = killsAttackOwnerSlot(a5, a1);
+    int killType = critterGetKillType(a1);
+
     critterAdjustHitPoints(a1, -damage);
 
     if (a1 == gDude) {
@@ -6235,9 +6240,19 @@ static void _damage_object(Object* a1, int damage, bool animated, int a4, Object
                         slot = 0;
                     }
                     _combat_exps[slot] += critterGetExp(a1);
-                    killsIncByType(critterGetKillType(a1));
                 }
             }
+        }
+
+        // The caller skips already-dead targets, so each death is counted once.
+        // Preserve the destroy script's ability to override normal kill rewards.
+        bool killOverridden = false;
+        Script* killScript;
+        if (scriptGetScript(a1->sid, &killScript) != -1) {
+            killOverridden = killScript->scriptOverrides;
+        }
+        if (killSlot >= 0 && !killOverridden) {
+            killsIncByType(killType, playerActorAt(killSlot));
         }
 
         if (a1->sid != -1) {

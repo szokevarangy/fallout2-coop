@@ -377,6 +377,7 @@ void playerActorSeedSheetFromHost(int slot)
     traitsPlayerActorSeedSlot(slot);
     skillsPlayerActorSeedSlot(slot);
     critterPlayerActorSeedNameSlot(slot);
+    killsPlayerActorResetSlot(slot);
 }
 
 // Spawn ONE extra player actor beside the host into `slot` and register it.
@@ -480,6 +481,9 @@ static int serverSpawnExtraActors()
     traitsPlayerActorSeed();
     skillsPlayerActorSeed();
     critterPlayerActorSeedNames();
+    for (int slot = 1; slot < kMaxPlayerActors; slot++) {
+        killsPlayerActorResetSlot(slot);
+    }
 
     for (int slot = 1; slot < want; slot++) {
         if (serverSpawnPlayerActor(slot) != slot) {

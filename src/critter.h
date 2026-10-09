@@ -49,8 +49,13 @@ int radiationEventProcess(Object* obj, void* data);
 int radiationEventRead(File* stream, void** dataPtr);
 int radiationEventWrite(File* stream, void* data);
 int critterGetDamageType(Object* critter);
-int killsIncByType(int killType);
-int killsGetByType(int killType);
+int killsIncByType(int killType, Object* subject = nullptr);
+int killsGetByType(int killType, Object* subject = nullptr);
+// Direct attack credit: player or explicitly owned companion; -1 otherwise.
+int killsAttackOwnerSlot(Object* attacker, Object* victim);
+void killsPlayerActorResetSlot(int slot);
+int killsPlayerActorRowWrite(File* stream, int slot);
+int killsPlayerActorRowRead(File* stream, int slot);
 int killsLoad(File* stream);
 int killsSave(File* stream);
 int critterGetKillType(Object* critter);
