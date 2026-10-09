@@ -20,6 +20,7 @@
 #include "game_sound.h"
 #include "geometry.h"
 #include "interface.h"
+#include "inventory.h"
 #include "item.h"
 #include "map.h"
 #include "memory.h"
@@ -1317,6 +1318,13 @@ void actionThrowConsumeHeadless(Attack* attack)
     itemRemove(attack->attacker, weapon, 1);
     itemReplace(attack->attacker, weapon, weaponFlags & OBJECT_IN_ANY_HAND);
     _cAIPrepWeaponItem(attack->attacker, weapon);
+
+    // The server has no throw-animation tail to clear the old weapon pose.
+    // Match the remaining equipped items now, including NPCs, so a later wield
+    // does not record a put-away for a weapon that has already been thrown.
+    if (serverDedicatedActive() && !critterIsDead(attack->attacker)) {
+        invenRederiveWeaponFid(attack->attacker);
+    }
 
     // itemRemove detaches `weapon` (owner cleared) but does NOT free it — reconnect it to
     // the world (spear) or destroy it (grenade), else it orphans.
