@@ -6198,9 +6198,17 @@ static void viewerServiceTicker()
     if (getenv("F2_NO_MODAL_PRESENT") != nullptr) {
         return;
     }
-    // Only when the isometric world is actually up: the worldmap modal disables it, and
-    // stepping glides for a map nobody is looking at is pure waste.
-    if (isoIsDisabled()) {
+    // Local browsing screens disable iso input, but the server keeps moving actors.
+    // Advance both the presentation queue and its animations so movement neither
+    // freezes behind the window nor accumulates a backlog to replay on close.
+    // Combat browsing keeps its existing pause; worldmap and other screens are excluded.
+    const int mode = GameMode::getCurrentGameMode();
+    const int backgroundMovementScreens = GameMode::kInventory | GameMode::kEditor
+        | GameMode::kPipboy | GameMode::kAutomap;
+    const bool presentBehindScreen = !gViewerConn->inCombat()
+        && (mode & backgroundMovementScreens) != 0
+        && (mode & ~(backgroundMovementScreens | GameMode::kPlayerTurn)) == 0;
+    if (isoIsDisabled() && !presentBehindScreen) {
         return;
     }
     gViewerConn->presentationTick(); // start/advance queued replays, drain the queue
