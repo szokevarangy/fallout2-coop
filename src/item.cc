@@ -1119,6 +1119,38 @@ int itemIsQueued(Object* obj)
 }
 
 // 0x478154
+// Match itemRemove + itemReplace without mutating the authoritative inventory.
+Object* itemReplacementAfterUse(Object* owner, Object* item)
+{
+    if (owner == nullptr || item == nullptr) {
+        return nullptr;
+    }
+
+    Object consumed = *item;
+    consumed.flags &= ~OBJECT_EQUIPPED;
+    Inventory* inventory = &owner->data.inventory;
+    for (int index = 0; index < inventory->length; index++) {
+        InventoryItem* entry = &inventory->items[index];
+        Object candidate = *entry->item;
+        if (entry->item == item) {
+            if (entry->quantity <= 1) {
+                continue;
+            }
+            // itemRemove splits a stack before clearing the consumed item's flags.
+        }
+        if (_item_identical(&candidate, &consumed)) {
+            return entry->item;
+        }
+        if (itemGetType(entry->item) == ITEM_TYPE_CONTAINER) {
+            Object* replacement = itemReplacementAfterUse(entry->item, item);
+            if (replacement != nullptr) {
+                return replacement;
+            }
+        }
+    }
+    return nullptr;
+}
+
 Object* itemReplace(Object* owner, Object* itemToReplace, int flags)
 {
     if (owner == nullptr) {
