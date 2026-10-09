@@ -1,3 +1,4 @@
+#include "animation_diagnostic.h"
 #include "client_net.h"
 
 #include <algorithm>
@@ -1114,6 +1115,7 @@ public:
                 break;
             }
             case PresKind::kRecordedSeq:
+                animDiagnostic("client-seq-play", lookup(ev.seqActorNetId), (int)ev.seqOps.size());
                 presPlayRecordedSeq(ev.seqOps.data(), (int)ev.seqOps.size(), true);
                 for (int ref : ev.seqReserved) {
                     clientCombatAnimNotePlayed(lookup(ref));
@@ -2739,6 +2741,7 @@ private:
             const char* path = held ? "HELD(replay)" : ((clientViewerActive() && clientAnimActiveFor(obj)) ? "DEFERRED(glide)" : "APPLIED(now)");
             fprintf(stderr, "[dude-fid] net=%d newFid=0x%x oldFid=0x%x path=%s\n", netId, fid, obj->fid, path);
         }
+        if (hasFid) animDiagnostic("client-fid-recv", obj, fid, held ? 1 : 0);
         if (!held) {
             if (hasFid) {
                 // A gliding critter's authoritative fid is ROUTED onto its walk (landed at
@@ -3865,7 +3868,10 @@ private:
                 break;
             }
             case PRES_OP_SEQ_END:
-                if (execute) reg_anim_end();
+                if (execute) {
+                    int diagnosticRc = reg_anim_end();
+                    animDiagnostic("client-seq-end", nullptr, diagnosticRc);
+                }
                 break;
             case PRES_OP_PRIORITY: {
                 int n = r.i32();
@@ -4083,6 +4089,7 @@ private:
                 if (execute) {
                     Object* o = resolveSeqRef(ref, handles);
                     Object* target = resolveSeqRef(targetRef, handles);
+                    animDiagnostic("client-pickup-walk", o, targetRef, ap, preWalkAp);
                     if (o && preWalkAp >= 0 && FID_TYPE(o->fid) == OBJ_TYPE_CRITTER) {
                         o->data.critter.combat.ap = preWalkAp;
                     }
@@ -4192,6 +4199,7 @@ private:
         if (getenv("F2_TRACE_EVENTS") != nullptr) {
             fprintf(stderr, "[presseq] RECV bytes=%d actor=%d inCombat=%d\n", (int)ops.size(), actorNetId, _inCombat ? 1 : 0);
         }
+        animDiagnostic("client-seq-recv", lookup(actorNetId), (int)ops.size());
         // DRY pass: reserve every live participant before this beat's death-fid deltas land
         // (§12.6 trap 6 — reserve/move-hold arming STAYS at decode; only OBJ_CREATE minting
         // moved to execute, or the same-beat corpse-fid leak regresses for every attack).

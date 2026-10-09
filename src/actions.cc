@@ -1,3 +1,4 @@
+#include "animation_diagnostic.h"
 #include "actions.h"
 
 #include <limits.h>
@@ -1528,6 +1529,7 @@ int _action_use_an_object(Object* user, Object* targetObj)
 // 0x412134
 int actionPickUp(Object* critter, Object* item)
 {
+    animDiagnostic("server-pickup-begin", critter, item->netId, item->tile, item->pid);
     if (FID_TYPE(item->fid) != OBJ_TYPE_ITEM) {
         return -1;
     }
@@ -1698,6 +1700,7 @@ int actionPickUp(Object* critter, Object* item)
         // script ran twice; gone.
         presRecordCommitDeferred();
         bool taken = item->owner == critter;
+        animDiagnostic("server-pickup-result", critter, item->netId, taken ? 1 : 0, rc);
         bool traceP = getenv("F2_TRACE_EVENTS") != nullptr;
         if (traceP) {
             fprintf(stderr, "[cpickup] critter=%d item_net=%d %s (critter tile %d, item was at tile %d, distance now %d)\n",

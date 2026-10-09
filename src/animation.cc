@@ -1,3 +1,4 @@
+#include "animation_diagnostic.h"
 #include "animation.h"
 
 #include <stdio.h>
@@ -913,6 +914,7 @@ int animationRegisterAnimate(Object* owner, int anim, int delay)
 {
     if (_check_registry(owner) == -1) {
         _anim_cleanup();
+        animDiagnostic("engine-animate-FAIL", owner, anim, delay);
         return -1;
     }
 
@@ -928,11 +930,13 @@ int animationRegisterAnimate(Object* owner, int anim, int delay)
     // NOTE: Uninline.
     if (_anim_preload(owner, fid, &(animationDescription->artCacheKey)) == -1) {
         _anim_cleanup();
+        animDiagnostic("engine-animate-FAIL", owner, anim, delay);
         return -1;
     }
 
     gAnimationDescriptionCurrentIndex++;
 
+    animDiagnostic("engine-animate-OK", owner, anim, delay);
     return 0;
 }
 
@@ -1252,11 +1256,13 @@ int animationRegisterTakeOutWeapon(Object* owner, int weaponAnimationCode, int d
 {
     const char* sfx = sfxBuildCharName(owner, ANIM_TAKE_OUT, weaponAnimationCode);
     if (animationRegisterPlaySoundEffect(owner, sfx, delay) == -1) {
+        animDiagnostic("engine-takeout-FAIL", owner, weaponAnimationCode, delay);
         return -1;
     }
 
     if (_check_registry(owner) == -1) {
         _anim_cleanup();
+        animDiagnostic("engine-takeout-FAIL", owner, weaponAnimationCode, delay);
         return -1;
     }
 
@@ -1273,11 +1279,13 @@ int animationRegisterTakeOutWeapon(Object* owner, int weaponAnimationCode, int d
     // NOTE: Uninline.
     if (_anim_preload(owner, fid, &(animationDescription->artCacheKey)) == -1) {
         _anim_cleanup();
+        animDiagnostic("engine-takeout-FAIL", owner, weaponAnimationCode, delay);
         return -1;
     }
 
     gAnimationDescriptionCurrentIndex++;
 
+    animDiagnostic("engine-takeout-OK", owner, weaponAnimationCode, delay);
     return 0;
 }
 
@@ -2455,6 +2463,7 @@ static bool _object_animate_pass()
             sad->field_20 = -1000;
             _anim_set_continue(sad->animationSequenceIndex, 1);
         } else {
+            animDiagnostic("engine-fid-mismatch", object, sad->fid, sad->flags, sad->animationSequenceIndex);
             int x;
             int y;
 
