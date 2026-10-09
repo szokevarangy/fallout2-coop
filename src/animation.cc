@@ -1,3 +1,4 @@
+#include "animation_diagnostic.h"
 #include "animation.h"
 
 #include <stdio.h>
@@ -913,6 +914,7 @@ int animationRegisterAnimate(Object* owner, int anim, int delay)
 {
     if (_check_registry(owner) == -1) {
         _anim_cleanup();
+        animDiagnostic("engine-animate-FAIL", owner, anim, delay);
         return -1;
     }
 
@@ -928,11 +930,13 @@ int animationRegisterAnimate(Object* owner, int anim, int delay)
     // NOTE: Uninline.
     if (_anim_preload(owner, fid, &(animationDescription->artCacheKey)) == -1) {
         _anim_cleanup();
+        animDiagnostic("engine-animate-FAIL", owner, anim, delay);
         return -1;
     }
 
     gAnimationDescriptionCurrentIndex++;
 
+    animDiagnostic("engine-animate-OK", owner, anim, delay);
     return 0;
 }
 
@@ -1252,11 +1256,13 @@ int animationRegisterTakeOutWeapon(Object* owner, int weaponAnimationCode, int d
 {
     const char* sfx = sfxBuildCharName(owner, ANIM_TAKE_OUT, weaponAnimationCode);
     if (animationRegisterPlaySoundEffect(owner, sfx, delay) == -1) {
+        animDiagnostic("engine-takeout-FAIL", owner, weaponAnimationCode, delay);
         return -1;
     }
 
     if (_check_registry(owner) == -1) {
         _anim_cleanup();
+        animDiagnostic("engine-takeout-FAIL", owner, weaponAnimationCode, delay);
         return -1;
     }
 
@@ -1273,11 +1279,13 @@ int animationRegisterTakeOutWeapon(Object* owner, int weaponAnimationCode, int d
     // NOTE: Uninline.
     if (_anim_preload(owner, fid, &(animationDescription->artCacheKey)) == -1) {
         _anim_cleanup();
+        animDiagnostic("engine-takeout-FAIL", owner, weaponAnimationCode, delay);
         return -1;
     }
 
     gAnimationDescriptionCurrentIndex++;
 
+    animDiagnostic("engine-takeout-OK", owner, weaponAnimationCode, delay);
     return 0;
 }
 
@@ -1643,6 +1651,7 @@ static int _anim_set_end(int animationSequenceIndex)
     for (i = 0; i < gAnimationCurrentSad; i++) {
         AnimationSad* sad = &(gAnimationSads[i]);
         if (sad->animationSequenceIndex == animationSequenceIndex) {
+            animDiagnostic("engine-sequence-end-task", sad->obj, i, sad->field_20, animationSequenceIndex);
             sad->field_20 = -1000;
         }
     }
@@ -2304,6 +2313,7 @@ static void _object_straight_move(int index)
 // 0x4179B8
 static int _anim_animate(Object* obj, int anim, int animationSequenceIndex, int flags)
 {
+    animDiagnostic("engine-animate-start", obj, anim, animationSequenceIndex, flags);
     if (gAnimationCurrentSad == ANIMATION_SAD_LIST_CAPACITY) {
         return -1;
     }
@@ -2362,6 +2372,14 @@ static bool _object_animate_pass()
         sad->animationTimestamp = time;
         progressed = true;
 
+        // Frame-ready samples only: expose competing tasks and sequence progress.
+        animDiagnostic("engine-task-tick", object, index, sad->field_20, sad->field_1C);
+        animDiagnostic("engine-task-meta", object, sad->fid, sad->flags, sad->animationSequenceIndex);
+        if (animDiagnosticEnabled() && sad->animationSequenceIndex >= 0) {
+            AnimationSequence* seq = &gAnimationSequences[sad->animationSequenceIndex];
+            animDiagnostic("engine-sequence-progress", object, seq->field_0, seq->animationIndex, seq->length);
+        }
+
         if (animationRunSequence(sad->animationSequenceIndex) == -1) {
             continue;
         }
@@ -2376,6 +2394,7 @@ static bool _object_animate_pass()
                     scriptsExecSpatialProc(object, object->tile, object->elevation);
                 }
             }
+            animDiagnostic("engine-move-step", object, index, sad->field_20, sad->field_1C);
             continue;
         }
 
@@ -2383,6 +2402,7 @@ static bool _object_animate_pass()
             for (int index = 0; index < gAnimationCurrentSad; index++) {
                 AnimationSad* otherSad = &(gAnimationSads[index]);
                 if (object == otherSad->obj && otherSad->field_20 == -2000) {
+                    animDiagnostic("engine-task-superseded", object, index, otherSad->animationSequenceIndex, sad->animationSequenceIndex);
                     otherSad->field_20 = -1000;
                     _anim_set_continue(otherSad->animationSequenceIndex, 1);
                 }
@@ -2401,6 +2421,7 @@ static bool _object_animate_pass()
                 Art* art = artLock(object->fid, &cacheHandle);
                 if (art != nullptr) {
                     if ((sad->flags & ANIM_SAD_FOREVER) == 0 && object->frame == artGetFrameCount(art) - 1) {
+                        animDiagnostic("engine-animate-finished", object, index, sad->animationSequenceIndex, artGetFrameCount(art));
                         sad->field_20 = -1000;
                         artUnlock(cacheHandle);
 
@@ -2413,6 +2434,7 @@ static bool _object_animate_pass()
                         continue;
                     } else {
                         objectSetNextFrame(object, &tempRect);
+                        animDiagnostic("engine-frame-next", object, index, sad->animationSequenceIndex, artGetFrameCount(art));
                         rectUnion(&dirtyRect, &tempRect, &dirtyRect);
 
                         int frameX;
@@ -2455,6 +2477,7 @@ static bool _object_animate_pass()
             sad->field_20 = -1000;
             _anim_set_continue(sad->animationSequenceIndex, 1);
         } else {
+            animDiagnostic("engine-fid-mismatch", object, sad->fid, sad->flags, sad->animationSequenceIndex);
             int x;
             int y;
 

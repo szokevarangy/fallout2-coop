@@ -1,3 +1,4 @@
+#include "animation_diagnostic.h"
 #include "client_net.h"
 
 #include <algorithm>
@@ -486,6 +487,8 @@ public:
         // Each is owed this replay (clientCombatAnimReserve) until the sequence executes
         // or is dropped, and is told so then (clientCombatAnimNotePlayed).
         std::vector<int> seqReserved;
+        std::vector<int> seqPickupTargets;
+        int seqPickupActor = 0;
         std::string text; // kConsole / kFloat / kSfx
         int consoleChannel = kMsgChannelDefault; // kConsole — message-log style (msg_channel.h)
         // kDeferredEvent — the parked state event, re-dispatched verbatim at drain.
@@ -501,6 +504,8 @@ public:
     // teardown paths clear it (§12.6 trap 2: miss the clear and later events defer against
     // a count that never decrements, then force-apply a full cap late, forever).
     std::unordered_map<int, int> _pendingAdopts;
+    std::unordered_map<int, int> _pendingPickupTargets;
+    std::unordered_map<int, int> _pendingPickupActors;
 
     // Set while the pump (or the overflow backstop) is re-dispatching a parked event
     // through event(). Without it the drain would re-park the same event forever: the
@@ -1114,7 +1119,13 @@ public:
                 break;
             }
             case PresKind::kRecordedSeq:
+                animDiagnostic("client-seq-play", lookup(ev.seqActorNetId), (int)ev.seqOps.size());
+                for (int target : ev.seqPickupTargets) {
+                    animDiagnostic("pickup-target-play", lookup(target), target, ev.seqPickupActor,
+                        (int)ev.seqOps.size());
+                }
                 presPlayRecordedSeq(ev.seqOps.data(), (int)ev.seqOps.size(), true);
+                releasePickupSequence(ev);
                 for (int ref : ev.seqReserved) {
                     clientCombatAnimNotePlayed(lookup(ref));
                 }
@@ -1481,6 +1492,7 @@ private:
                     attackNotePlayed(it->attack);
                 }
                 if (it->kind == PresKind::kRecordedSeq) {
+                    releasePickupSequence(*it);
                     // This sequence will never execute, so the mints it promised at decode
                     // will never happen — release them, or the netIds stay entangled with
                     // nothing left to un-entangle them and every later event for them waits
@@ -1546,6 +1558,21 @@ private:
     // X defers, X is entangled for as long as the FIFO holds it, so every LATER event for
     // X defers too — per-netId wire order is preserved end to end by construction, not by
     // a sort.
+    static void releasePickupRef(std::unordered_map<int, int>& refs, int netId)
+    {
+        auto it = refs.find(netId);
+        if (it != refs.end() && --it->second == 0) refs.erase(it);
+    }
+
+    void releasePickupSequence(const PresEvent& e)
+    {
+        for (int target : e.seqPickupTargets) {
+            animDiagnostic("pickup-target-release", lookup(target), target, e.seqPickupActor, (int)_presQueue.size());
+            releasePickupRef(_pendingPickupTargets, target);
+        }
+        if (e.seqPickupActor != 0) releasePickupRef(_pendingPickupActors, e.seqPickupActor);
+    }
+
     bool presEntangled(int netId) const
     {
         if (netId <= 0) {
@@ -1578,7 +1605,13 @@ private:
         size_t len = r.remaining();
         Reader peek(payload, len);
         int netId = peek.i32();
-        if (peek.overflow() || !presEntangled(netId)) {
+        animDiagnostic("pickup-state-recv", lookup(netId), netId, type, (int)entryId);
+        bool pickupTarget = _pendingPickupTargets.count(netId) != 0;
+        bool pickupInventory = type == EVENT_OBJECT_DELTA
+            && _pendingPickupActors.count(netId) != 0
+            && (peek.u16() & OBJECT_DELTA_INVENTORY) != 0;
+        if (peek.overflow() || (!presEntangled(netId) && !pickupTarget && !pickupInventory)) {
+            animDiagnostic("pickup-state-immediate", lookup(netId), netId, type, (int)entryId);
             return false;
         }
         PresEvent e;
@@ -1587,6 +1620,23 @@ private:
         e.defBytes.assign(payload, payload + len); // length-prefixed, so this is the whole event
         e.defEntryId = entryId;
         e.defNetId = netId;
+        if (pickupTarget || pickupInventory) {
+            // Outside combat the general pump need not wait for an actor.
+            // Tie the deferred removal to the picker, not the idle ground item.
+            if (pickupTarget) {
+                for (const PresEvent& pending : _presQueue) {
+                    if (pending.kind == PresKind::kRecordedSeq
+                        && std::find(pending.seqPickupTargets.begin(), pending.seqPickupTargets.end(), netId) != pending.seqPickupTargets.end()) {
+                        e.defNetId = pending.seqPickupActor;
+                        break;
+                    }
+                }
+            }
+        }
+        animDiagnostic("pickup-state-park", lookup(netId), netId, type, (int)entryId);
+        animDiagnostic("pickup-state-gate", lookup(e.defNetId), netId,
+            (pickupTarget ? 1 : 0) | (pickupInventory ? 2 : 0) | (presEntangled(netId) ? 4 : 0),
+            (int)_presQueue.size());
         if (getenv("F2_TRACE_EVENTS") != nullptr) {
             fprintf(stderr, "[adopt] PARK type=%d net=%d bytes=%d pendingMints=%d live=%d queued=%d\n",
                 (int)type, netId, (int)len,
@@ -1878,7 +1928,9 @@ private:
         // seedNetMap below is now populate-only.
         _net.clear();
         _adoptTransients.clear(); // adopt transients die with the old world (Fable review A3)
-        _pendingAdopts.clear(); // ...and so do pending adopt mints (§12.6 trap 2)
+        _pendingAdopts.clear();
+        _pendingPickupTargets.clear();
+        _pendingPickupActors.clear(); // ...and so do pending adopt mints (§12.6 trap 2)
 
         // Drop the previous blob's actor registrations BEFORE mapLoad frees the
         // objects they point at (MP_PROPOSAL.md Ch 5.3). Same reasoning as
@@ -2240,6 +2292,8 @@ private:
     void onSpawn(Reader& r)
     {
         int netId = r.i32();
+        animDiagnostic("pickup-apply-onConnect", lookup(netId), netId,
+            _applyingDeferredEvent ? 1 : 0, (int)_lastEntryId);
         int pid = r.i32();
         int tile = r.i32();
         int elev = r.i32();
@@ -2272,6 +2326,8 @@ private:
     void onMove(Reader& r)
     {
         int netId = r.i32();
+        animDiagnostic("pickup-apply-onMove", lookup(netId), netId,
+            _applyingDeferredEvent ? 1 : 0, (int)_lastEntryId);
         int fromTile = r.i32();
         int toTile = r.i32();
         int fromElev = r.i32();
@@ -2409,6 +2465,8 @@ private:
     void onDestroy(Reader& r)
     {
         int netId = r.i32();
+        animDiagnostic("pickup-apply-onDestroy", lookup(netId), netId,
+            _applyingDeferredEvent ? 1 : 0, (int)_lastEntryId);
         r.i32(); // pid
         Object* obj = lookup(netId);
         if (obj != nullptr) {
@@ -2574,6 +2632,8 @@ private:
     void onDisconnect(Reader& r)
     {
         int netId = r.i32();
+        animDiagnostic("pickup-apply-onDisconnect", lookup(netId), netId,
+            _applyingDeferredEvent ? 1 : 0, (int)_lastEntryId);
         r.i32(); // pid
         Object* obj = lookup(netId);
         if (clientViewerActive() && getenv("F2_TRACE_EVENTS") != nullptr) {
@@ -2645,6 +2705,8 @@ private:
     void onObjectDelta(Reader& r)
     {
         int netId = r.i32();
+        animDiagnostic("pickup-apply-onObjectDelta", lookup(netId), netId,
+            _applyingDeferredEvent ? 1 : 0, (int)_lastEntryId);
         unsigned int mask = r.u16();
         // Field order MUST match presenter_network.cc objectDelta (bit order).
         int fid = 0, rot = 0, hp = 0, rad = 0, poison = 0, ap = 0, results = 0;
@@ -2683,6 +2745,9 @@ private:
                 wi.ammoQuantity = r.i32();
                 wi.ammoTypePid = r.i32();
                 invItems.push_back(wi);
+                animDiagnostic("pickup-inventory-entry", lookup(wi.netId), wi.netId, netId, wi.quantity);
+                animDiagnostic("pickup-inventory-flags", lookup(wi.netId), wi.netId, (int)wi.flags,
+                    _applyingDeferredEvent ? 1 : 0);
             }
         }
         // FRAME then LIGHT (bits 9,10), after the variable-length inventory — matches the writer.
@@ -2739,6 +2804,7 @@ private:
             const char* path = held ? "HELD(replay)" : ((clientViewerActive() && clientAnimActiveFor(obj)) ? "DEFERRED(glide)" : "APPLIED(now)");
             fprintf(stderr, "[dude-fid] net=%d newFid=0x%x oldFid=0x%x path=%s\n", netId, fid, obj->fid, path);
         }
+        if (hasFid) animDiagnostic("client-fid-recv", obj, fid, held ? 1 : 0);
         if (!held) {
             if (hasFid) {
                 // A gliding critter's authoritative fid is ROUTED onto its walk (landed at
@@ -3421,7 +3487,9 @@ private:
         presReset();
         _net.clear();
         _adoptTransients.clear(); // adopt transients die with the old world (Fable review A3)
-        _pendingAdopts.clear(); // ...and so do pending adopt mints (§12.6 trap 2)
+        _pendingAdopts.clear();
+        _pendingPickupTargets.clear();
+        _pendingPickupActors.clear(); // ...and so do pending adopt mints (§12.6 trap 2)
         _loaded = false;
         setInCombat(false); // a transition ends any local combat framing
         _myTurn = false;
@@ -3806,6 +3874,7 @@ private:
     // each: a sequence names the same object in several ops, and a reserve counts one
     // replay owed (bugs/077). Read by onPresSeq straight after the pass, like _seqAdoptIds.
     std::vector<int> _seqReservedIds;
+    std::vector<int> _seqPickupTargetIds;
 
     Object* resolveSeqRef(int ref, std::unordered_map<int, Object*>& handles)
     {
@@ -3865,7 +3934,10 @@ private:
                 break;
             }
             case PRES_OP_SEQ_END:
-                if (execute) reg_anim_end();
+                if (execute) {
+                    int diagnosticRc = reg_anim_end();
+                    animDiagnostic("client-seq-end", nullptr, diagnosticRc);
+                }
                 break;
             case PRES_OP_PRIORITY: {
                 int n = r.i32();
@@ -4083,6 +4155,7 @@ private:
                 if (execute) {
                     Object* o = resolveSeqRef(ref, handles);
                     Object* target = resolveSeqRef(targetRef, handles);
+                    animDiagnostic("client-pickup-walk", o, targetRef, ap, preWalkAp);
                     if (o && preWalkAp >= 0 && FID_TYPE(o->fid) == OBJ_TYPE_CRITTER) {
                         o->data.critter.combat.ap = preWalkAp;
                     }
@@ -4094,12 +4167,23 @@ private:
                     // target's multihex approach).
                     int heldTile = o ? clientCombatAnimHeldMoveTile(o) : -1;
                     if (o && heldTile >= 0) {
-                        if (anim == ANIM_RUNNING) animationRegisterRunToTile(o, heldTile, o->elevation, ap, delay);
-                        else animationRegisterMoveToTile(o, heldTile, o->elevation, ap, delay);
+                        // A zero-length path fails during execution and aborts the
+                        // whole sequence, including its waiting pickup animation.
+                        if (o->tile != heldTile) {
+                            if (anim == ANIM_RUNNING) animationRegisterRunToTile(o, heldTile, o->elevation, ap, delay);
+                            else animationRegisterMoveToTile(o, heldTile, o->elevation, ap, delay);
+                        }
                         clientCombatAnimMarkActive(o, kMoveReplayCapMs, /*ownsMoveFrame=*/true);
                     } else if (o && target) {
-                        if (anim == ANIM_RUNNING) animationRegisterRunToObject(o, target, ap, delay);
-                        else animationRegisterMoveToObject(o, target, ap, delay);
+                        // Inventory reconciliation may already have disconnected
+                        // this target. With no held movement endpoint, retain the
+                        // current pose and play the remaining gesture in place.
+                        // An adjacent target also needs no approach task.
+                        if (target->tile >= 0 && target->owner == nullptr
+                            && objectGetDistanceBetween(o, target) > ((o->flags & OBJECT_MULTIHEX) != 0 ? 2 : 1)) {
+                            if (anim == ANIM_RUNNING) animationRegisterRunToObject(o, target, ap, delay);
+                            else animationRegisterMoveToObject(o, target, ap, delay);
+                        }
                         clientCombatAnimMarkActive(o, kMoveReplayCapMs, /*ownsMoveFrame=*/true);
                     } else if (o) {
                         // No held position AND no target — nothing to walk to; the reap snaps
@@ -4110,6 +4194,14 @@ private:
                 } else {
                     reserveSeqRef(ref);
                     clientCombatAnimArmMoveHold(lookup(ref)); // hold the MOVER only (not the target)
+                    Object* target = lookup(targetRef);
+                    animDiagnostic("pickup-target-decode", target, targetRef, ref,
+                        target != nullptr && target->owner != nullptr ? target->owner->netId : 0);
+                    if (target != nullptr && FID_TYPE(target->fid) == OBJ_TYPE_ITEM
+                        && target->owner == nullptr && target->tile >= 0
+                        && std::find(_seqPickupTargetIds.begin(), _seqPickupTargetIds.end(), targetRef) == _seqPickupTargetIds.end()) {
+                        _seqPickupTargetIds.push_back(targetRef);
+                    }
                 }
                 break;
             }
@@ -4195,12 +4287,14 @@ private:
         if (getenv("F2_TRACE_EVENTS") != nullptr) {
             fprintf(stderr, "[presseq] RECV bytes=%d actor=%d inCombat=%d\n", (int)ops.size(), actorNetId, _inCombat ? 1 : 0);
         }
+        animDiagnostic("client-seq-recv", lookup(actorNetId), (int)ops.size());
         // DRY pass: reserve every live participant before this beat's death-fid deltas land
         // (§12.6 trap 6 — reserve/move-hold arming STAYS at decode; only OBJ_CREATE minting
         // moved to execute, or the same-beat corpse-fid leak regresses for every attack).
         // It also PROMISES this sequence's adopt mints, which entangles those netIds from
         // here on — the parking rule for everything that follows on the state lane.
         _seqReservedIds.clear();
+        _seqPickupTargetIds.clear();
         presPlayRecordedSeq(ops.data(), (int)ops.size(), false);
         std::vector<int> promisedAdopts = _seqAdoptIds;
         std::vector<int> reserved = _seqReservedIds;
@@ -4215,6 +4309,15 @@ private:
             e.seqActorNetId = actorNetId;
             e.seqAdopts = std::move(promisedAdopts);
             e.seqReserved = std::move(reserved);
+            if (actorNetId != 0 && !_seqPickupTargetIds.empty()) {
+                e.seqPickupTargets = _seqPickupTargetIds;
+                e.seqPickupActor = actorNetId;
+                for (int target : e.seqPickupTargets) {
+                    _pendingPickupTargets[target]++;
+                    animDiagnostic("pickup-target-queue", lookup(target), target, actorNetId, (int)_lastEntryId);
+                }
+                _pendingPickupActors[actorNetId]++;
+            }
             enqueue(e);
         } else {
             // Plays now, so the promise is kept immediately (the execute pass releases it).

@@ -1,3 +1,4 @@
+#include "animation_diagnostic.h"
 #include "actions.h"
 
 #include <limits.h>
@@ -1542,6 +1543,7 @@ int _action_use_an_object(Object* user, Object* targetObj)
 // 0x412134
 int actionPickUp(Object* critter, Object* item)
 {
+    animDiagnostic("server-pickup-begin", critter, item->netId, item->tile, item->pid);
     if (FID_TYPE(item->fid) != OBJ_TYPE_ITEM) {
         return -1;
     }
@@ -1628,7 +1630,10 @@ int actionPickUp(Object* critter, Object* item)
     animationRegisterCallback(critter, item, (AnimationCallback*)_check_scenery_ap_cost, -1);
 
     if (canPickup) {
-        animationRegisterAnimate(critter, ANIM_MAGIC_HANDS_GROUND, 0);
+        // Recorded playback omits the server-only callbacks above. Keep an
+        // explicit barrier so the approach finishes before the pickup pose
+        // starts; otherwise both tasks advance the same object's frames.
+        animationRegisterAnimate(critter, ANIM_MAGIC_HANDS_GROUND, -1);
 
         int fid = buildFid(OBJ_TYPE_CRITTER, critter->fid & 0xFFF, ANIM_MAGIC_HANDS_GROUND, (critter->fid & 0xF000) >> 12, critter->rotation + 1);
 
@@ -1712,6 +1717,7 @@ int actionPickUp(Object* critter, Object* item)
         // script ran twice; gone.
         presRecordCommitDeferred();
         bool taken = item->owner == critter;
+        animDiagnostic("server-pickup-result", critter, item->netId, taken ? 1 : 0, rc);
         bool traceP = getenv("F2_TRACE_EVENTS") != nullptr;
         if (traceP) {
             fprintf(stderr, "[cpickup] critter=%d item_net=%d %s (critter tile %d, item was at tile %d, distance now %d)\n",

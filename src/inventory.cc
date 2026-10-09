@@ -1,3 +1,4 @@
+#include "animation_diagnostic.h"
 #include "inventory.h"
 
 #include <assert.h>
@@ -369,6 +370,7 @@ int _inven_wield(Object* critter, Object* item, int hand)
 // 0x472768
 int _invenWieldFunc(Object* critter, Object* item, int handIndex, bool animate)
 {
+    animDiagnostic("wield-begin", critter, item->netId, item->pid, animate ? 1 : 0);
     // PRESENTATION-RECORD (weapon-draw family, PRESENTATION_RECORD_REPLAY_SPEC.md §8):
     // capture the wield's reg_anim leaves (put-away + take-out draw) in a record section
     // and ship them as EVENT_PRES_SEQ instead of the combat-only weaponTakeOut cue below.
@@ -559,7 +561,9 @@ int _invenWieldFunc(Object* critter, Object* item, int handIndex, bool animate)
             auto settleServerWeaponFid = [&]() {
                 if (!serverLoopActive() || !isInCombat()) return;
                 int armedFid = buildFid(OBJ_TYPE_CRITTER, critter->fid & 0xFFF, ANIM_STAND, weaponAnimationCode, critter->rotation + 1);
+                animDiagnostic("server-wield-before-arm", critter, weaponAnimationCode, armedFid);
                 objectSetFid(critter, armedFid, nullptr);
+                animDiagnostic("server-wield-after-arm", critter, weaponAnimationCode);
                 objectSetFrame(critter, 0, nullptr);
                 if (getenv("F2_TRACE_EVENTS") != nullptr) {
                     fprintf(stderr, "[swield-armfid] net=%d armedFid=0x%x wpnCode=%d\n",
@@ -572,6 +576,7 @@ int _invenWieldFunc(Object* critter, Object* item, int handIndex, bool animate)
                     if (!isoIsDisabled()) {
                         const char* soundEffectName = sfxBuildCharName(critter, ANIM_PUT_AWAY, CHARACTER_SOUND_EFFECT_UNUSED);
                         animationRegisterPlaySoundEffect(critter, soundEffectName, 0);
+                        animDiagnostic("wield-putaway", critter, weaponAnimationCode);
                         animationRegisterAnimate(critter, ANIM_PUT_AWAY, 0);
                     }
                 }
@@ -579,6 +584,7 @@ int _invenWieldFunc(Object* critter, Object* item, int handIndex, bool animate)
 
             if (animate && !isoIsDisabled()) {
                 if (weaponAnimationCode != 0) {
+                    animDiagnostic("wield-takeout", critter, weaponAnimationCode);
                     animationRegisterTakeOutWeapon(critter, weaponAnimationCode, -1);
                     recordedDraw = true; // a real draw — ship the recorded section below
                 } else {

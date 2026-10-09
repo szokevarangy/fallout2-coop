@@ -1,3 +1,4 @@
+#include "animation_diagnostic.h"
 #include "client_present.h"
 
 #include <cstdio>
@@ -509,6 +510,7 @@ void resolveHeld(PresEntry& e, bool resume, FrameReap reap = FrameReap::All)
             if (getenv("F2_TRACE_EVENTS") != nullptr && obj->tile != tile) {
                 fprintf(stderr, "[cmove-drift] net=%d walkedTo=%d authTile=%d\n", obj->netId, obj->tile, tile);
             }
+            animDiagnostic("client-position-settle", obj, tile, elev, reap == FrameReap::One ? 1 : 0);
             objectSetLocation(obj, tile, elev, nullptr);
             reconciledPos = true;
         }
@@ -531,6 +533,7 @@ void resolveHeld(PresEntry& e, bool resume, FrameReap reap = FrameReap::All)
     }
     e.dHasSnapPos = false; // consumed (or superseded by a recorded-walk pos) — never linger
     if (e.dHasFid) {
+        animDiagnostic("client-pose-settle", obj, e.dFid);
         objectSetFid(obj, e.dFid, nullptr);
         // Reset the frame to 0. objectSetFid changes only obj->fid, never obj->frame,
         // and the held fid is a SETTLED pose — most importantly the single-frame SF
@@ -866,6 +869,9 @@ void advanceReplays()
         // Active.
         unsigned int capMs = e.replayCapMs != 0 ? e.replayCapMs : kReplayCapMs;
         bool capped = getTicksBetween(now, e.replaySince) >= capMs;
+        if (animationIsBusy(obj) == 0 || capped) {
+            animDiagnostic("client-replay-end", obj, capped ? 1 : 0, e.owed, (int)e.holdFrames.size());
+        }
         if (animationIsBusy(obj) == 0 || capped) {
             if (capped && animationIsBusy(obj) != 0) {
                 // The cap fired while this replay's reg_anim is STILL registered. Dropping

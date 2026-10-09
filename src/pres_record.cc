@@ -1,3 +1,4 @@
+#include "animation_diagnostic.h"
 #include "pres_record.h"
 
 #include "server_loop.h" // serverFeatureEnabled — features default ON for a server
@@ -437,6 +438,7 @@ void presRecordPriority(int n)
 
 static void recordAnimLike(unsigned char op, Object* owner, int anim, int delay)
 {
+    animDiagnostic("server-record-anim", owner, anim, delay, op);
     int ref = resolveRef(owner);
     // ANIMATE / _REV / _FOREVER are on-screen busy time (one cycle each — FOREVER is
     // clamped by the busy window anyway); ANIMATE_AND_HIDE is the explosion cloud, a
