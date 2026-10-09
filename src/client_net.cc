@@ -6212,7 +6212,13 @@ static void viewerServiceTicker()
         return;
     }
     gViewerConn->presentationTick(); // start/advance queued replays, drain the queue
-    presAdvance(); // glides, reg_anim sequences, reaping — each refreshing its own rects
+    presAdvance(); // glides, reg_anim sequences, reaping
+    if (isoIsDisabled() && presentBehindScreen) {
+        // Glides update offsets and frames without dirty-rect refreshes. The main
+        // loop normally repaints them, but it is blocked inside this modal loop.
+        // Refresh the iso window; window clipping preserves the menu above it.
+        tileWindowRefresh();
+    }
     // Reap items unlinked mid-fight once nothing can still be pointing at them. Every
     // other flush point is a modal CLOSE, and a fight has none — without this the queue
     // would sit until teardown. The flush re-checks the replay gate itself.
