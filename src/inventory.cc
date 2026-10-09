@@ -555,7 +555,11 @@ int _invenWieldFunc(Object* critter, Object* item, int handIndex, bool animate)
             // fid directly (same fid the vanilla non-animate branch's _dude_stand uses);
             // it rides OBJECT_DELTA, and viewers HOLD it during the draw replay. Server-
             // only (client/goldens use the animate path); combat-scoped to match the emit.
-            if (serverLoopActive() && isInCombat()) {
+            // Register put-away and take-out from the PREVIOUS pose first.
+            // Publishing the new pose before that check invents a put-away when
+            // an empty-handed critter equips its first weapon.
+            auto settleServerWeaponFid = [&]() {
+                if (!serverLoopActive() || !isInCombat()) return;
                 int armedFid = buildFid(OBJ_TYPE_CRITTER, critter->fid & 0xFFF, ANIM_STAND, weaponAnimationCode, critter->rotation + 1);
                 animDiagnostic("server-wield-before-arm", critter, weaponAnimationCode, armedFid);
                 objectSetFid(critter, armedFid, nullptr);
@@ -565,7 +569,7 @@ int _invenWieldFunc(Object* critter, Object* item, int handIndex, bool animate)
                     fprintf(stderr, "[swield-armfid] net=%d armedFid=0x%x wpnCode=%d\n",
                         critter->netId, armedFid, weaponAnimationCode);
                 }
-            }
+            };
 
             if ((critter->fid & 0xF000) >> 12 != 0) {
                 if (animate) {
@@ -591,6 +595,7 @@ int _invenWieldFunc(Object* critter, Object* item, int handIndex, bool animate)
                 int fid = buildFid(OBJ_TYPE_CRITTER, critter->fid & 0xFFF, 0, weaponAnimationCode, critter->rotation + 1);
                 _dude_stand(critter, critter->rotation, fid);
             }
+            settleServerWeaponFid();
         }
     }
 
