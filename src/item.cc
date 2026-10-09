@@ -1146,6 +1146,17 @@ Object* itemReplacementAfterUse(Object* owner, Object* item)
         if (_item_identical(&candidate, &consumed)) {
             return entry->item;
         }
+        // A previous stack split can leave another inventory entry equipped
+        // in the same hand. itemReplace rejects equipped entries, but that
+        // surviving entry still supplies the server's weapon pose. Include it
+        // in the recorded tail, comparing copies without changing equip flags.
+        if (entry->item != item
+            && (candidate.flags & item->flags & OBJECT_IN_ANY_HAND) != 0) {
+            candidate.flags &= ~OBJECT_EQUIPPED;
+            if (_item_identical(&candidate, &consumed)) {
+                return entry->item;
+            }
+        }
         if (itemGetType(entry->item) == ITEM_TYPE_CONTAINER) {
             Object* replacement = itemReplacementAfterUse(entry->item, item);
             if (replacement != nullptr) {
