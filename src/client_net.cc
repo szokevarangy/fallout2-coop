@@ -248,7 +248,8 @@ unsigned int crc32Of(const unsigned char* data, int length)
 static const int kViewerModalMask = GameMode::kInventory | GameMode::kSkilldex
     | GameMode::kEditor | GameMode::kPipboy | GameMode::kLoot | GameMode::kUseOn
     | GameMode::kDialog | GameMode::kWorldmap | GameMode::kBarter
-    | GameMode::kPreferences | GameMode::kAutomap;
+    | GameMode::kPreferences | GameMode::kAutomap | GameMode::kOptions
+	| GameMode::kQuitConfirmation | GameMode::kCounter;
 
 // ─── Combat outlines on the wire viewer (COMBAT_CLIENT_DESIGN #8) ────────────
 // Vanilla draws colored critter outlines in combat (red=hostile / green=friendly by
@@ -6204,8 +6205,12 @@ static void viewerServiceTicker()
     // Combat browsing keeps its existing pause; worldmap and other screens are excluded.
     const int mode = GameMode::getCurrentGameMode();
     const int backgroundMovementScreens = GameMode::kInventory | GameMode::kEditor
-        | GameMode::kPipboy | GameMode::kAutomap;
+        | GameMode::kPipboy | GameMode::kAutomap | GameMode::kSkilldex
+        | GameMode::kOptions | GameMode::kPreferences | GameMode::kQuitConfirmation
+        | GameMode::kUseOn | GameMode::kLoot | GameMode::kCounter;
     const bool presentBehindScreen = !gViewerConn->inCombat()
+        && !clientStealActive()
+        && !clientStealEndPending()
         && (mode & backgroundMovementScreens) != 0
         && (mode & ~(backgroundMovementScreens | GameMode::kPlayerTurn)) == 0;
     if (isoIsDisabled() && !presentBehindScreen) {
