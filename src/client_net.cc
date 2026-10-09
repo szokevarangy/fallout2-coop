@@ -6204,20 +6204,13 @@ static void viewerServiceTicker()
     // Combat browsing keeps its existing pause; worldmap and other screens are excluded.
     const int mode = GameMode::getCurrentGameMode();
     const int backgroundMovementScreens = GameMode::kInventory | GameMode::kEditor
-        | GameMode::kPipboy | GameMode::kAutomap | GameMode::kSkilldex
-        | GameMode::kOptions | GameMode::kPreferences | GameMode::kQuitConfirmation
-        | GameMode::kUseOn | GameMode::kLoot | GameMode::kCounter;
-
+        | GameMode::kPipboy | GameMode::kAutomap;
     const bool presentBehindScreen = !gViewerConn->inCombat()
-        && !clientStealActive()
-        && !clientStealEndPending()
         && (mode & backgroundMovementScreens) != 0
         && (mode & ~(backgroundMovementScreens | GameMode::kPlayerTurn)) == 0;
-
     if (isoIsDisabled() && !presentBehindScreen) {
         return;
     }
-
     gViewerConn->presentationTick(); // start/advance queued replays, drain the queue
     presAdvance(); // glides, reg_anim sequences, reaping
     if (isoIsDisabled() && presentBehindScreen) {
