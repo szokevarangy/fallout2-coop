@@ -1,6 +1,8 @@
 #include "server_admin.h"
 
 #include <chrono>
+#include <cerrno>
+#include <climits>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -135,6 +137,61 @@ static const char* splitVerb(const char* line, char* verbOut, size_t verbSize)
     }
     return skipBlanks(p + n);
 }
+
+// Strict decimal arguments: reject missing/trailing tokens and integer overflow.
+static bool parseStateArgs(const char* text, int& slot, int& value)
+{
+    if (text == nullptr) return false;
+    char* end = nullptr;
+    errno = 0;
+    long first = strtol(text, &end, 10);
+    if (end == text || errno == ERANGE || first < 0 || first > INT_MAX
+        || (*end != ' ' && *end != '\t')) return false;
+    text = skipBlanks(end);
+    if (text == nullptr) return false;
+    errno = 0;
+    long second = strtol(text, &end, 10);
+    if (end == text || errno == ERANGE || second < INT_MIN || second > INT_MAX
+        || skipBlanks(end) != nullptr) return false;
+    slot = static_cast<int>(first);
+    value = static_cast<int>(second);
+    return true;
+}
+
+// PID accepts decimal or 0x-prefixed hexadecimal; count defaults to one.
+static bool parseGiveArgs(const char* text, int& slot, int& pid, int& count)
+{
+    if (text == nullptr) return false;
+    int values[3] = { 0, 0, 1 };
+    for (int i = 0; i < 3; i++) {
+        char* end = nullptr;
+        errno = 0;
+        // Use decimal by default, including numbers with leading zeroes.
+        int base = i == 1 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X') ? 16 : 10;
+        long value = strtol(text, &end, base);
+        if (end == text || errno == ERANGE || value < (i == 0 ? 0 : 1) || value > INT_MAX
+            || (*end != '\0' && *end != ' ' && *end != '\t')) return false;
+        values[i] = static_cast<int>(value);
+        text = skipBlanks(end);
+        if (text == nullptr) {
+            if (i == 0) return false;
+            break;
+        }
+        if (i == 2) return false;
+    }
+    if (values[2] > 10000) return false;
+    slot = values[0];
+    pid = values[1];
+    count = values[2];
+    return true;
+}
+
+static const int kAdminInjuryFlags[] = {
+    DAM_CRIP_ARM_LEFT, DAM_CRIP_ARM_RIGHT, DAM_CRIP_LEG_LEFT, DAM_CRIP_LEG_RIGHT, DAM_BLIND,
+};
+static const char* kAdminInjuryNames[] = {
+    "crippled left arm", "crippled right arm", "crippled left leg", "crippled right leg", "blindness",
+};
 
 // Operator-facing slot numbers are 1-based (SLOT01 is "1") because that is what
 // the directory names say; every API below wants 0-based. Returns -1 if `text`
@@ -721,6 +778,12 @@ static void writeHelp(const std::function<void(const char* text)>& reply, bool w
     reply("  revive <slot>         revive a dead player at 1 HP (no-op if not dead)");
     reply("  kill <slot>           kill a player (tests the revive and party-wipe rules)");
     reply("  xp <slot> <amount>    award experience to one seat (levels come with it)");
+    reply("  give <slot> <pid> [n] add n items of the given prototype ID to a player's inventory (default 1; max 10000)");
+    reply("    slot 0 = host; item defaults initialize ammo/charges; ammo counts are packs, not rounds");
+    reply("  poison <slot> <delta> add poison (resistance applies; resulting poison must be <=100)");
+    reply("  rads <slot> <delta>   add radiation (resistance applies; delta -100000..100000)");
+    reply("  injury <slot> <code>  add injury: 1 left arm, 2 right arm, 3 left leg, 4 right leg, 5 blindness");
+    reply("    player slots: 0 host, 1 player 2, etc.; negative poison/rads deltas remove levels");
     reply("  partyxp <slot> <amt>  award it the way play does: everyone playing is paid");
     reply("  sheet [slot]          level/xp/unspent points/owed perk/tags/traits per seat");
     reply("  rest <minutes> [slot] pass time for EVERYONE and heal every player");
@@ -1285,6 +1348,125 @@ bool serverAdminLine(const char* line,
             fprintf(stderr, "f2_server: admin gvar %d set to %d\n", index, value);
         }
         snprintf(msg, sizeof(msg), "gvar %d = %d", index, gameGetGlobalVar(index));
+        reply(msg);
+        return true;
+    }
+    if (strcmp(verb, "give") == 0) {
+        if (!worldLoaded) {
+            reply("give: no world loaded");
+            return true;
+        }
+        int slot;
+        int pid;
+        int count;
+        if (!parseGiveArgs(rest, slot, pid, count)) {
+            reply("usage: give <player slot> <item pid> [count] (slot 0 = host; count 1..10000, default 1)");
+            return true;
+        }
+        if (slot >= playerActorCount() || playerActorAt(slot) == nullptr) {
+            reply("give: player slot is out of range or empty");
+            return true;
+        }
+        Proto* proto = nullptr;
+        if (PID_TYPE(pid) != OBJ_TYPE_ITEM || protoGetProto(pid, &proto) == -1 || proto == nullptr
+            || proto->item.type < ITEM_TYPE_ARMOR || proto->item.type > ITEM_TYPE_KEY) {
+            reply("give: PID does not identify a valid item prototype");
+            return true;
+        }
+        Object* actor = playerActorAt(slot);
+        Inventory* inventory = &actor->data.inventory;
+        for (int i = 0; i < inventory->length; i++) {
+            if (inventory->items[i].item->pid == pid
+                && inventory->items[i].quantity > INT_MAX - count) {
+                reply("give: item stack would overflow");
+                return true;
+            }
+        }
+        ServerActorScope actorScope(actor);
+        Object* item = nullptr;
+        // The engine initializer sets weapon ammo type/capacity, ammo pack size,
+        // misc charges, key data, object identity and scripts from the prototype.
+        if (objectCreateWithPid(&item, pid) == -1 || item == nullptr) {
+            reply("give: item creation failed");
+            return true;
+        }
+        // Follow the existing stress-loadout path: remove world membership before
+        // assigning inventory ownership, avoiding duplicate teardown ownership.
+        _obj_disconnect(item, nullptr);
+        if (itemAdd(actor, item, count) == -1) {
+            objectDestroy(item, nullptr);
+            reply("give: could not add item to inventory");
+            return true;
+        }
+        // Inventory deltas are emitted by the normal server beat. This is an admin
+        // grant: it neither equips the item nor checks the carry-weight limit.
+        snprintf(msg, sizeof(msg), "give: added %d x %s (PID %d) to player %d (%s)",
+            count, protoGetName(pid), pid, slot, critterGetName(actor));
+        reply(msg);
+        return true;
+    }
+    if (strcmp(verb, "poison") == 0 || strcmp(verb, "rads") == 0 || strcmp(verb, "injury") == 0) {
+        if (!worldLoaded) {
+            reply("status: no world loaded");
+            return true;
+        }
+        int slot;
+        int value;
+        if (!parseStateArgs(rest, slot, value)) {
+            reply("usage: poison/rads <player slot> <delta> OR injury <player slot> <code> (slot 0 = host; see help)");
+            return true;
+        }
+        if (slot >= playerActorCount() || playerActorAt(slot) == nullptr) {
+            reply("status: player slot is out of range or empty (0 = host)");
+            return true;
+        }
+        Object* actor = playerActorAt(slot);
+        if (critterIsDead(actor)) {
+            reply("status: player is dead; revive them first");
+            return true;
+        }
+        ServerActorScope actorScope(actor);
+        if (strcmp(verb, "injury") == 0) {
+            if (value < 1 || value > 5) {
+                reply("injury: code must be 1..5; see help");
+                return true;
+            }
+            actor->data.critter.combat.results |= kAdminInjuryFlags[value - 1];
+            snprintf(msg, sizeof(msg), "injury: player %d (%s): %s", slot,
+                critterGetName(actor), kAdminInjuryNames[value - 1]);
+            reply(msg);
+            return true;
+        }
+        if (value < -100000 || value > 100000) {
+            reply("status: delta must be between -100000 and 100000");
+            return true;
+        }
+        bool poison = strcmp(verb, "poison") == 0;
+        int before = poison ? critterGetPoison(actor) : critterGetRadiation(actor);
+        if (value > 0) {
+            int resistance = critterGetStat(actor, poison ? STAT_POISON_RESISTANCE : STAT_RADIATION_RESISTANCE);
+            long long after = static_cast<long long>(before) + value
+                - static_cast<long long>(value) * resistance / 100;
+            // The vanilla poison interval is 10 * (505 - 5 * level).
+            // Do not allow a debug command to create a zero/negative timer.
+            if (after > (poison ? 100 : INT_MAX)) {
+                reply("status: resulting level too high (poison max 100)");
+                return true;
+            }
+        }
+        if (value != 0) {
+            if (poison) {
+                critterAdjustPoison(actor, value);
+                if (critterGetPoison(actor) == 0) {
+                    queueRemoveEventsByType(actor, EVENT_TYPE_POISON);
+                }
+            } else {
+                critterAdjustRadiation(actor, value);
+            }
+        }
+        int after = poison ? critterGetPoison(actor) : critterGetRadiation(actor);
+        snprintf(msg, sizeof(msg), "%s: player %d (%s): %d -> %d",
+            verb, slot, critterGetName(actor), before, after);
         reply(msg);
         return true;
     }
