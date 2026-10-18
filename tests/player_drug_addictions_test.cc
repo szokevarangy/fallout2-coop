@@ -216,19 +216,56 @@ int main()
         }
     }
 
-    // Jet fallback truth table: event OR (old label AND Jet gvar == EXACTLY 1).
+    // Own Jet events always identify addiction. The label/global fallback is
+    // allowed only with NO withdrawal events (pending onset counts as well).
     for (int jetGlobal : {0, 1, 2}) {
         for (bool label : {false, true}) {
-            for (bool ownEvent : {false, true}) {
-                reset();
-                globals[GVAR_ADDICT_JET] = jetGlobal;
-                if (label) dudeEnableState(DUDE_STATE_ADDICTED, second);
-                if (ownEvent) _insert_withdrawal(second, 1, 1, PERK_JET_ADDICTION, PROTO_ID_JET);
-                itemInitializePlayerAddictions();
-                assert(addicted(second, PROTO_ID_JET) == (ownEvent || (label && jetGlobal == 1)));
-                assert(!addicted(host, PROTO_ID_JET) && !addicted(third, PROTO_ID_JET));
-                assert(globals[GVAR_ADDICT_JET] == 0);
+            for (int jetStage : {-1, 0, 1}) {
+                for (int otherStage : {-1, 0, 1}) {
+                    reset();
+                    globals[GVAR_ADDICT_JET] = jetGlobal;
+                    if (label) dudeEnableState(DUDE_STATE_ADDICTED, second);
+                    if (jetStage != -1) _insert_withdrawal(second, jetStage, 1, PERK_JET_ADDICTION, PROTO_ID_JET);
+                    if (otherStage != -1) _insert_withdrawal(second, otherStage, 1, PERK_MENTATS_ADDICTION, PROTO_ID_MENTATS);
+                    itemInitializePlayerAddictions();
+                    assert(addicted(second, PROTO_ID_JET)
+                        == (jetStage != -1 || (otherStage == -1 && label && jetGlobal == 1)));
+                    assert(addicted(second, PROTO_ID_MENTATS) == (otherStage != -1));
+                    assert(!addicted(host, PROTO_ID_JET) && !addicted(third, PROTO_ID_JET));
+                    assert(globals[GVAR_ADDICT_JET] == 0);
+                    }
             }
+        }
+    }
+
+    // Legacy party: one permanent Jet addiction, one Mentats addiction. Check
+    // both host assignments and both Mentats stages. Antidote on the Mentats
+    // recipient must not remove a nonexistent Jet penalty or touch either timer.
+    for (bool jetOnHost : {false, true}) {
+        for (int mentatsStage : {0, 1}) {
+            reset();
+            Object* jetActor = jetOnHost ? host : second;
+            Object* mentatsActor = jetOnHost ? second : host;
+            globals[GVAR_ADDICT_JET] = 1;
+            dudeEnableState(DUDE_STATE_ADDICTED, jetActor);
+            dudeEnableState(DUDE_STATE_ADDICTED, mentatsActor);
+            penalties[jetActor] = 1;
+            penalties[mentatsActor] = mentatsStage == 0 ? 1 : 0;
+            _insert_withdrawal(mentatsActor, mentatsStage, 10, PERK_MENTATS_ADDICTION, PROTO_ID_MENTATS);
+            auto originalEvent = events.front();
+            itemInitializePlayerAddictions();
+            assert(addicted(jetActor, PROTO_ID_JET));
+            assert(!addicted(mentatsActor, PROTO_ID_JET));
+            assert(addicted(mentatsActor, PROTO_ID_MENTATS));
+            assert(globals[GVAR_ADDICT_JET] == (jetOnHost ? 1 : 0));
+            take(mentatsActor, PROTO_ID_JET_ANTIDOTE);
+            itemInitializePlayerAddictions();
+            assert(penalties[jetActor] == 1);
+            assert(penalties[mentatsActor] == (mentatsStage == 0 ? 1 : 0));
+            assert(dudeHasState(DUDE_STATE_ADDICTED, mentatsActor));
+            assert(!addicted(mentatsActor, PROTO_ID_JET));
+            assert(events.size() == 1 && events.front().data == originalEvent.data);
+            assert(events.front().time == originalEvent.time && events.front().owner == mentatsActor);
         }
     }
     // Host normalization must not erase evidence BEFORE extra players migrate.

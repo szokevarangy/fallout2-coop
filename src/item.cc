@@ -253,6 +253,7 @@ void itemInitializePlayerAddictions()
             dudeDisableState(state, actor);
         }
         auto* event = static_cast<WithdrawalEvent*>(queueFindFirstEvent(actor, EVENT_TYPE_WITHDRAWAL));
+        bool hasWithdrawalEvent = event != nullptr;
         while (event != nullptr) {
             int state = addictionStateForGvar(drugGetAddictionGvarByPid(event->pid));
             if (state != -1) {
@@ -260,7 +261,10 @@ void itemInitializePlayerAddictions()
             }
             event = static_cast<WithdrawalEvent*>(queueFindNextEvent(actor, EVENT_TYPE_WITHDRAWAL));
         }
-        if (legacyJet && legacyAddicted) {
+        // Any withdrawal event can explain the old label, so the shared Jet
+        // global is insufficient evidence in that case. Own Jet events above
+        // remain authoritative, including when another addiction also exists.
+        if (!hasWithdrawalEvent && legacyJet && legacyAddicted) {
             dudeEnableState(addictionStateForGvar(GVAR_ADDICT_JET), actor);
         }
         dudeEnableState(DUDE_STATE_ADDICTIONS_INITIALIZED, actor);
