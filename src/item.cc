@@ -15,6 +15,7 @@
 #include "automap.h"
 #include "combat.h"
 #include "combat_ap.h"
+#include "client_net.h"
 #include "critter.h"
 #include "debug.h"
 #include "display_monitor.h"
@@ -23,6 +24,7 @@
 #include "interface.h"
 #include "inventory.h"
 #include "light.h"
+#include "loadsave.h"
 #include "map.h"
 #include "memory.h"
 #include "message.h"
@@ -71,6 +73,40 @@ static int drugGetAddictionGvarByPid(int drugPid);
 static void dudeSetAddiction(int drugPid);
 static void dudeClearAddiction(int drugPid);
 static bool dudeIsAddicted(int drugPid);
+
+// The legacy helpers below have an implicit subject. Bind that subject to the
+// actual recipient/event owner, without rebinding gDude or entering another
+// ServerActorScope (an NPC can be the target of a player's action).
+static Object* gDrugActor = nullptr;
+class DrugActorScope {
+public:
+    explicit DrugActorScope(Object* actor)
+        : previous_(gDrugActor)
+    {
+        itemInitializePlayerAddictions();
+        gDrugActor = actor;
+    }
+    ~DrugActorScope() { gDrugActor = previous_; }
+    DrugActorScope(const DrugActorScope&) = delete;
+    DrugActorScope& operator=(const DrugActorScope&) = delete;
+private:
+    Object* previous_;
+};
+
+static bool usesPersonalAddictions(Object* actor)
+{
+    return serverDedicatedActive() && !_isLoadingGame()
+        && actor != nullptr && playerActorIs(actor);
+}
+
+static void addictionMessage(Object* actor, const char* text)
+{
+    if (usesPersonalAddictions(actor)) {
+        presenter()->consoleMessageFor(actor->netId, text);
+    } else {
+        presenter()->consoleMessage(text);
+    }
+}
 
 static void booksInit();
 static void booksInitVanilla();
@@ -165,6 +201,106 @@ static DrugDescription gDrugDescriptions[ADDICTION_COUNT] = {
     { PROTO_ID_JET, GVAR_ADDICT_JET, 4 },
     { PROTO_ID_DECK_OF_TRAGIC_CARDS, GVAR_ADDICT_TRAGIC, 0 },
 };
+
+// Stable save-bit order; do not reorder. The two alcohol items share one state.
+static const int gPersonalAddictionGvars[] = {
+    GVAR_NUKA_COLA_ADDICT, GVAR_BUFF_OUT_ADDICT, GVAR_MENTATS_ADDICT,
+    GVAR_PSYCHO_ADDICT, GVAR_RADAWAY_ADDICT, GVAR_ALCOHOL_ADDICT,
+    GVAR_ADDICT_JET, GVAR_ADDICT_TRAGIC,
+};
+static_assert(sizeof(gPersonalAddictionGvars) / sizeof(int)
+    == DUDE_STATE_ADDICTION_LAST - DUDE_STATE_ADDICTION_FIRST + 1);
+
+static int addictionStateForGvar(int gvar)
+{
+    for (int index = 0; index <= DUDE_STATE_ADDICTION_LAST - DUDE_STATE_ADDICTION_FIRST; index++) {
+        if (gPersonalAddictionGvars[index] == gvar) {
+            return DUDE_STATE_ADDICTION_FIRST + index;
+        }
+    }
+    return -1;
+}
+
+static bool playerHasAnyAddiction(Object* actor)
+{
+    for (int state = DUDE_STATE_ADDICTION_FIRST; state <= DUDE_STATE_ADDICTION_LAST; state++) {
+        if (dudeHasState(state, actor)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void refreshPlayerAddictedIndicator(Object* actor)
+{
+    if (playerHasAnyAddiction(actor)) {
+        dudeEnableState(DUDE_STATE_ADDICTED, actor);
+    } else {
+        dudeDisableState(DUDE_STATE_ADDICTED, actor);
+    }
+}
+
+// GVAR POLICY: scripts see ONLY the host's addictions. This is intentionally
+// isolated from personal state/migration so the policy can be changed separately.
+static void syncHostAddictionGlobals()
+{
+    Object* host = playerActorAt(0);
+    if (host == nullptr || !dudeHasState(DUDE_STATE_ADDICTIONS_INITIALIZED, host)) {
+        return;
+    }
+    for (int gvar : gPersonalAddictionGvars) {
+        gGameGlobalVars[gvar] = dudeHasState(addictionStateForGvar(gvar), host) ? 1 : 0;
+    }
+}
+
+void itemInitializePlayerAddictions()
+{
+    if (!serverDedicatedActive() || _isLoadingGame()) {
+        return;
+    }
+
+    // Snapshot BEFORE normalizing globals. Every legacy player must see the
+    // same evidence, even when the host is not addicted but another player is.
+    bool legacyJet = gGameGlobalVars[GVAR_ADDICT_JET] == 1;
+    for (int slot = 0; slot < playerActorCount(); slot++) {
+        Object* actor = playerActorAt(slot);
+        if (actor == nullptr || dudeHasState(DUDE_STATE_ADDICTIONS_INITIALIZED, actor)) {
+            continue;
+        }
+        bool legacyAddicted = dudeHasState(DUDE_STATE_ADDICTED, actor);
+        for (int state = DUDE_STATE_ADDICTION_FIRST; state <= DUDE_STATE_ADDICTION_LAST; state++) {
+            dudeDisableState(state, actor);
+        }
+        auto* event = static_cast<WithdrawalEvent*>(queueFindFirstEvent(actor, EVENT_TYPE_WITHDRAWAL));
+        while (event != nullptr) {
+            int state = addictionStateForGvar(drugGetAddictionGvarByPid(event->pid));
+            if (state != -1) {
+                dudeEnableState(state, actor);
+            }
+            event = static_cast<WithdrawalEvent*>(queueFindNextEvent(actor, EVENT_TYPE_WITHDRAWAL));
+        }
+        if (legacyJet && legacyAddicted) {
+            dudeEnableState(addictionStateForGvar(GVAR_ADDICT_JET), actor);
+        }
+        dudeEnableState(DUDE_STATE_ADDICTIONS_INITIALIZED, actor);
+        refreshPlayerAddictedIndicator(actor);
+    }
+    // No queue mutation or perk/stat replay: those already belong to each actor.
+    syncHostAddictionGlobals();
+}
+
+bool itemIsAddictedByGvar(Object* actor, int gvar)
+{
+    int state = addictionStateForGvar(gvar);
+    if (state == -1) {
+        return false;
+    }
+    if ((serverDedicatedActive() || clientViewerActive()) && actor != nullptr
+        && playerActorIs(actor) && dudeHasState(DUDE_STATE_ADDICTIONS_INITIALIZED, actor)) {
+        return dudeHasState(state, actor);
+    }
+    return gGameGlobalVars[gvar] != 0;
+}
 
 // 0x519238
 static char* _name_item = _aItem_1;
@@ -2915,6 +3051,7 @@ static bool _drug_effect_allowed(Object* critter, int pid)
 // 0x479F60
 int _item_d_take_drug(Object* critter, Object* item)
 {
+    DrugActorScope addictionSubject(critter);
     if (critterIsDead(critter)) {
         return -1;
     }
@@ -2930,7 +3067,7 @@ int _item_d_take_drug(Object* critter, Object* item)
         if (dudeIsAddicted(PROTO_ID_JET)) {
             performWithdrawalEnd(critter, PERK_JET_ADDICTION);
 
-            if (critter == gDude) {
+            if (critter == gDude || usesPersonalAddictions(critter)) {
                 // NOTE: Uninline.
                 dudeClearAddiction(PROTO_ID_JET);
             }
@@ -2951,11 +3088,11 @@ int _item_d_take_drug(Object* critter, Object* item)
         _insert_drug_effect(critter, item, proto->item.data.drug.duration1, proto->item.data.drug.stat, proto->item.data.drug.amount1);
         _insert_drug_effect(critter, item, proto->item.data.drug.duration2, proto->item.data.drug.stat, proto->item.data.drug.amount2);
     } else {
-        if (critter == gDude) {
+        if (critter == gDude || usesPersonalAddictions(critter)) {
             MessageListItem messageListItem;
             // That didn't seem to do that much.
             char* msg = getmsg(&gItemsMessageList, &messageListItem, 50);
-            presenter()->consoleMessage(msg);
+            addictionMessage(critter, msg);
         }
     }
 
@@ -2978,7 +3115,7 @@ int _item_d_take_drug(Object* critter, Object* item)
         if (randomBetween(1, 100) <= addictionChance) {
             _insert_withdrawal(critter, 1, proto->item.data.drug.withdrawalOnset, proto->item.data.drug.withdrawalEffect, item->pid);
 
-            if (critter == gDude) {
+            if (critter == gDude || usesPersonalAddictions(critter)) {
                 // NOTE: Uninline.
                 dudeSetAddiction(item->pid);
             }
@@ -3116,6 +3253,7 @@ static int _item_wd_clear_all(Object* a1, void* data)
 // 0x47A384
 int withdrawalEventProcess(Object* obj, void* data)
 {
+    DrugActorScope addictionSubject(obj);
     WithdrawalEvent* withdrawalEvent = (WithdrawalEvent*)data;
 
     if (withdrawalEvent->field_0) {
@@ -3127,13 +3265,13 @@ int withdrawalEventProcess(Object* obj, void* data)
 
         performWithdrawalEnd(obj, withdrawalEvent->perk);
 
-        if (obj == gDude) {
+        if (obj == gDude || usesPersonalAddictions(obj)) {
             // NOTE: Uninline.
             dudeClearAddiction(withdrawalEvent->pid);
         }
     }
 
-    if (obj == gDude) {
+    if (obj == gDude || usesPersonalAddictions(obj)) {
         return 1;
     }
 
@@ -3185,11 +3323,11 @@ static void performWithdrawalStart(Object* obj, int perk, int pid)
 
     perkAddEffect(obj, perk);
 
-    if (obj == gDude) {
+    if (obj == gDude || usesPersonalAddictions(obj)) {
         char* description = perkGetDescription(perk);
         // SFALL: Fix crash when description is missing.
         if (description != nullptr) {
-            presenter()->consoleMessage(description);
+            addictionMessage(obj, description);
         }
     }
 
@@ -3218,11 +3356,11 @@ static void performWithdrawalEnd(Object* obj, int perk)
 
     perkRemoveEffect(obj, perk);
 
-    if (obj == gDude) {
+    if (obj == gDude || usesPersonalAddictions(obj)) {
         MessageListItem messageListItem;
         messageListItem.num = 3;
         if (messageListGetItem(&gItemsMessageList, &messageListItem)) {
-            presenter()->consoleMessage(messageListItem.text);
+            addictionMessage(obj, messageListItem.text);
         }
     }
 }
@@ -3245,6 +3383,16 @@ static int drugGetAddictionGvarByPid(int drugPid)
 // 0x47A5E8
 static void dudeSetAddiction(int drugPid)
 {
+    Object* actor = gDrugActor != nullptr ? gDrugActor : gDude;
+    if (usesPersonalAddictions(actor)) {
+        int state = addictionStateForGvar(drugGetAddictionGvarByPid(drugPid));
+        if (state != -1) {
+            dudeEnableState(state, actor);
+            refreshPlayerAddictedIndicator(actor);
+            syncHostAddictionGlobals();
+        }
+        return;
+    }
     int gvar = drugGetAddictionGvarByPid(drugPid);
     if (gvar != -1) {
         gGameGlobalVars[gvar] = 1;
@@ -3258,6 +3406,16 @@ static void dudeSetAddiction(int drugPid)
 // 0x47A60C
 static void dudeClearAddiction(int drugPid)
 {
+    Object* actor = gDrugActor != nullptr ? gDrugActor : gDude;
+    if (usesPersonalAddictions(actor)) {
+        int state = addictionStateForGvar(drugGetAddictionGvarByPid(drugPid));
+        if (state != -1) {
+            dudeDisableState(state, actor);
+            refreshPlayerAddictedIndicator(actor);
+            syncHostAddictionGlobals();
+        }
+        return;
+    }
     int gvar = drugGetAddictionGvarByPid(drugPid);
     if (gvar != -1) {
         gGameGlobalVars[gvar] = 0;
@@ -3274,6 +3432,11 @@ static void dudeClearAddiction(int drugPid)
 // 0x47A640
 static bool dudeIsAddicted(int drugPid)
 {
+    Object* actor = gDrugActor != nullptr ? gDrugActor : gDude;
+    if (usesPersonalAddictions(actor)) {
+        return drugPid == -1 ? playerHasAnyAddiction(actor)
+                            : itemIsAddictedByGvar(actor, drugGetAddictionGvarByPid(drugPid));
+    }
     for (int index = 0; index < ADDICTION_COUNT; index++) {
         DrugDescription* drugDescription = &(gDrugDescriptions[index]);
         if (drugPid == -1 || drugPid == drugDescription->drugPid) {
