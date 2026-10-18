@@ -371,6 +371,34 @@ int main()
     take(second, PROTO_ID_JET_ANTIDOTE);
     assert(!addicted(second, PROTO_ID_JET) && penalties[second] == 0);
 
+    // Permanent Jet redose uses the recipient's identity even with a different
+    // gDude and host globals clear. Only the recipient's penalty/onset changes.
+    reset();
+    take(second, PROTO_ID_JET);
+    take(third, PROTO_ID_JET);
+    advanceTo(600 + 600 * 10080);
+    assert(events.empty() && penalties[second] == 1 && penalties[third] == 1);
+    int callsBeforeJetRedose = rngCalls;
+    take(second, PROTO_ID_JET);
+    assert(penalties[second] == 0 && penalties[third] == 1 && penalties[host] == 0);
+    assert(countWithdrawal(second, PROTO_ID_JET) == 1);
+    assert(countWithdrawal(third, PROTO_ID_JET) == 0);
+    assert(addicted(second, PROTO_ID_JET) && addicted(third, PROTO_ID_JET));
+    assert(globals[GVAR_ADDICT_JET] == 0 && rngCalls == callsBeforeJetRedose);
+    advanceTo(now + 600);
+    assert(penalties[second] == 1 && penalties[third] == 1);
+
+    // A clean recipient must not reverse a penalty just because the host is
+    // permanently addicted. A failed addiction roll leaves it clean.
+    reset();
+    take(host, PROTO_ID_JET);
+    advanceTo(600 + 600 * 10080);
+    roll = 100;
+    take(second, PROTO_ID_JET);
+    assert(penalties[host] == 1 && penalties[second] == 0);
+    assert(!addicted(second, PROTO_ID_JET) && countWithdrawal(second, PROTO_ID_JET) == 0);
+    assert(globals[GVAR_ADDICT_JET] == 1);
+
 #ifdef TEST_WITH_DRUG_FIXES
     // C remains independent on a real dedicated server as well: an NPC uses
     // queue evidence, never the currently bound player's personal addiction bits.
