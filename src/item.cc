@@ -70,28 +70,9 @@ static int _item_wd_clear_all(Object* a1, void* data);
 static void performWithdrawalStart(Object* obj, int perk, int a3);
 static void performWithdrawalEnd(Object* obj, int a2);
 static int drugGetAddictionGvarByPid(int drugPid);
-static void dudeSetAddiction(int drugPid);
-static void dudeClearAddiction(int drugPid);
-static bool dudeIsAddicted(int drugPid);
-
-// The legacy helpers below have an implicit subject. Bind that subject to the
-// actual recipient/event owner, without rebinding gDude or entering another
-// ServerActorScope (an NPC can be the target of a player's action).
-static Object* gDrugActor = nullptr;
-class DrugActorScope {
-public:
-    explicit DrugActorScope(Object* actor)
-        : previous_(gDrugActor)
-    {
-        itemInitializePlayerAddictions();
-        gDrugActor = actor;
-    }
-    ~DrugActorScope() { gDrugActor = previous_; }
-    DrugActorScope(const DrugActorScope&) = delete;
-    DrugActorScope& operator=(const DrugActorScope&) = delete;
-private:
-    Object* previous_;
-};
+static void dudeSetAddiction(Object* actor, int drugPid);
+static void dudeClearAddiction(Object* actor, int drugPid);
+static bool dudeIsAddicted(Object* actor, int drugPid);
 
 static bool usesPersonalAddictions(Object* actor)
 {
@@ -3051,7 +3032,7 @@ static bool _drug_effect_allowed(Object* critter, int pid)
 // 0x479F60
 int _item_d_take_drug(Object* critter, Object* item)
 {
-    DrugActorScope addictionSubject(critter);
+    itemInitializePlayerAddictions();
     if (critterIsDead(critter)) {
         return -1;
     }
@@ -3064,12 +3045,12 @@ int _item_d_take_drug(Object* critter, Object* item)
     protoGetProto(item->pid, &proto);
 
     if (item->pid == PROTO_ID_JET_ANTIDOTE) {
-        if (dudeIsAddicted(PROTO_ID_JET)) {
+        if (dudeIsAddicted(critter, PROTO_ID_JET)) {
             performWithdrawalEnd(critter, PERK_JET_ADDICTION);
 
             if (critter == gDude || usesPersonalAddictions(critter)) {
                 // NOTE: Uninline.
-                dudeClearAddiction(PROTO_ID_JET);
+                dudeClearAddiction(critter, PROTO_ID_JET);
             }
 
             // SFALL: Fix for Jet antidote not being removed.
@@ -3096,7 +3077,7 @@ int _item_d_take_drug(Object* critter, Object* item)
         }
     }
 
-    if (!dudeIsAddicted(item->pid)) {
+    if (!dudeIsAddicted(critter, item->pid)) {
         int addictionChance = proto->item.data.drug.addictionChance;
         if (playerActorIs(critter)) {
             if (traitIsSelected(TRAIT_CHEM_RELIANT, critter)) {
@@ -3117,7 +3098,7 @@ int _item_d_take_drug(Object* critter, Object* item)
 
             if (critter == gDude || usesPersonalAddictions(critter)) {
                 // NOTE: Uninline.
-                dudeSetAddiction(item->pid);
+                dudeSetAddiction(critter, item->pid);
             }
         }
     }
@@ -3253,7 +3234,7 @@ static int _item_wd_clear_all(Object* a1, void* data)
 // 0x47A384
 int withdrawalEventProcess(Object* obj, void* data)
 {
-    DrugActorScope addictionSubject(obj);
+    itemInitializePlayerAddictions();
     WithdrawalEvent* withdrawalEvent = (WithdrawalEvent*)data;
 
     if (withdrawalEvent->field_0) {
@@ -3267,7 +3248,7 @@ int withdrawalEventProcess(Object* obj, void* data)
 
         if (obj == gDude || usesPersonalAddictions(obj)) {
             // NOTE: Uninline.
-            dudeClearAddiction(withdrawalEvent->pid);
+            dudeClearAddiction(obj, withdrawalEvent->pid);
         }
     }
 
@@ -3381,9 +3362,8 @@ static int drugGetAddictionGvarByPid(int drugPid)
 // NOTE: Inlined.
 //
 // 0x47A5E8
-static void dudeSetAddiction(int drugPid)
+static void dudeSetAddiction(Object* actor, int drugPid)
 {
-    Object* actor = gDrugActor != nullptr ? gDrugActor : gDude;
     if (usesPersonalAddictions(actor)) {
         int state = addictionStateForGvar(drugGetAddictionGvarByPid(drugPid));
         if (state != -1) {
@@ -3396,6 +3376,12 @@ static void dudeSetAddiction(int drugPid)
     int gvar = drugGetAddictionGvarByPid(drugPid);
     if (gvar != -1) {
         gGameGlobalVars[gvar] = 1;
+        // SP still uses globals. Keep an already migrated character's saved
+        // identity current so returning to co-op cannot restore stale bits.
+        if (!serverDedicatedActive() && !clientViewerActive() && actor == gDude
+            && dudeHasState(DUDE_STATE_ADDICTIONS_INITIALIZED, actor)) {
+            dudeEnableState(addictionStateForGvar(gvar), actor);
+        }
     }
 
     dudeEnableState(DUDE_STATE_ADDICTED);
@@ -3404,9 +3390,8 @@ static void dudeSetAddiction(int drugPid)
 // NOTE: Inlined.
 //
 // 0x47A60C
-static void dudeClearAddiction(int drugPid)
+static void dudeClearAddiction(Object* actor, int drugPid)
 {
-    Object* actor = gDrugActor != nullptr ? gDrugActor : gDude;
     if (usesPersonalAddictions(actor)) {
         int state = addictionStateForGvar(drugGetAddictionGvarByPid(drugPid));
         if (state != -1) {
@@ -3419,9 +3404,13 @@ static void dudeClearAddiction(int drugPid)
     int gvar = drugGetAddictionGvarByPid(drugPid);
     if (gvar != -1) {
         gGameGlobalVars[gvar] = 0;
+        if (!serverDedicatedActive() && !clientViewerActive() && actor == gDude
+            && dudeHasState(DUDE_STATE_ADDICTIONS_INITIALIZED, actor)) {
+            dudeDisableState(addictionStateForGvar(gvar), actor);
+        }
     }
 
-    if (!dudeIsAddicted(-1)) {
+    if (!dudeIsAddicted(actor, -1)) {
         dudeDisableState(DUDE_STATE_ADDICTED);
     }
 }
@@ -3430,9 +3419,8 @@ static void dudeClearAddiction(int drugPid)
 // if [pid] is -1.
 //
 // 0x47A640
-static bool dudeIsAddicted(int drugPid)
+static bool dudeIsAddicted(Object* actor, int drugPid)
 {
-    Object* actor = gDrugActor != nullptr ? gDrugActor : gDude;
     if (usesPersonalAddictions(actor)) {
         return drugPid == -1 ? playerHasAnyAddiction(actor)
                             : itemIsAddictedByGvar(actor, drugGetAddictionGvarByPid(drugPid));

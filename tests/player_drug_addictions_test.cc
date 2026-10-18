@@ -399,6 +399,57 @@ int main()
     assert(penalties[host] == 1 && penalties[second] == 0);
 #endif
 
+    // A migrated host can continue in SP and return to co-op. Mode switches
+    // retain the flags/globals/events that a save carries; this is not a full
+    // disk-load integration test. Extra players' identities must stay untouched.
+    reset();
+    take(second, PROTO_ID_MENTATS);
+    dedicated = false;
+    take(host, PROTO_ID_JET);
+    advanceTo(600 + 600 * 10080);
+    assert(penalties[host] == 1 && countWithdrawal(host, PROTO_ID_JET) == 0);
+    assert(globals[GVAR_ADDICT_JET] == 1);
+    assert(dudeHasState(addictionStateForGvar(GVAR_ADDICT_JET), host));
+    dedicated = true;
+    itemInitializePlayerAddictions();
+    assert(addicted(host, PROTO_ID_JET) && globals[GVAR_ADDICT_JET] == 1);
+    take(host, PROTO_ID_JET_ANTIDOTE);
+    assert(!addicted(host, PROTO_ID_JET) && penalties[host] == 0);
+
+    // Conversely, a Jet cure in SP must not resurrect addiction on return.
+    reset();
+    take(host, PROTO_ID_JET);
+    take(second, PROTO_ID_JET);
+    advanceTo(600 + 600 * 10080);
+    dedicated = false;
+    take(host, PROTO_ID_JET_ANTIDOTE);
+    assert(penalties[host] == 0 && globals[GVAR_ADDICT_JET] == 0);
+    assert(!dudeHasState(addictionStateForGvar(GVAR_ADDICT_JET), host));
+    assert(dudeHasState(addictionStateForGvar(GVAR_ADDICT_JET), second));
+    dedicated = true;
+    itemInitializePlayerAddictions();
+    assert(!addicted(host, PROTO_ID_JET) && globals[GVAR_ADDICT_JET] == 0);
+    assert(addicted(second, PROTO_ID_JET) && penalties[second] == 1);
+    take(host, PROTO_ID_JET_ANTIDOTE);
+    assert(penalties[host] == 0);
+
+    // Natural recovery in SP also clears the persisted identity. Retain the
+    // legacy indicator behavior, even with multiple addictions (separate fix).
+    reset();
+    take(host, PROTO_ID_PSYCHO);
+    dedicated = false;
+    take(host, PROTO_ID_MENTATS);
+    int callsBeforeRedose = rngCalls;
+    take(host, PROTO_ID_MENTATS);
+    assert(rngCalls == callsBeforeRedose);
+    advanceTo(600 + 600 * 10080);
+    assert(penalties[host] == 0);
+    assert(!playerHasAnyAddiction(host));
+    dedicated = true;
+    itemInitializePlayerAddictions();
+    assert(!addicted(host, PROTO_ID_PSYCHO) && !addicted(host, PROTO_ID_MENTATS));
+    assert(globals[GVAR_PSYCHO_ADDICT] == 0 && globals[GVAR_MENTATS_ADDICT] == 0);
+
     // Single-player still uses legacy globals, labels, RNG and event behavior.
     reset();
     dedicated = false;
