@@ -251,6 +251,8 @@ enum EventType : unsigned char {
     EVENT_PARTY_WIPE = 68, // everyone is dead: play the death screen, a reload follows
     EVENT_ENDGAME = 69, // the game is won: play the ending slides + credits, no reload
     EVENT_ACCOUNT_STATE = 70, // reply to `account <name>`: (sessionId, known), read by that session only
+    EVENT_SKILL_RESULT_BEGIN = 71, // bounded causal group; older viewers ignore the brackets
+    EVENT_SKILL_RESULT_END = 72,
 };
 
 // Event flag bits.
@@ -1508,6 +1510,25 @@ public:
     // state out of a tick that is parked inside a script. Flushing on the way OUT
     // matters too: whatever happened BEFORE the fade should land while the screen can
     // still show it, not get swept past the black with everything else.
+    void skillResultBegin(int actorNetId) override
+    {
+        if (presenterEmissionsSuppressed()) return;
+        // Do not sweep unrelated changes from earlier in this beat into the heal.
+        objectDeltaScan();
+        beginEvent(EVENT_SKILL_RESULT_BEGIN, 0);
+        putI32(actorNetId);
+        endEvent();
+    }
+
+    void skillResultEnd() override
+    {
+        if (presenterEmissionsSuppressed()) return;
+        objectDeltaScan();
+        beginEvent(EVENT_SKILL_RESULT_END, 0);
+        endEvent();
+        flushFrame();
+    }
+
     void screenFadeOut(int actorNetId) override
     {
         if (presenterEmissionsSuppressed()) return;

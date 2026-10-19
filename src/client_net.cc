@@ -227,6 +227,8 @@ enum : unsigned char {
     EVENT_PARTY_WIPE = 68, // everyone is dead: death screen, then the server's reload
     EVENT_ENDGAME = 69, // the game is won: ending slides + credits, no reload follows
     EVENT_ACCOUNT_STATE = 70, // reply to our pre-join account query: (sessionId, known)
+    EVENT_SKILL_RESULT_BEGIN = 71,
+    EVENT_SKILL_RESULT_END = 72,
 };
 
 // crc32 (IEEE, reflected) — MUST match server_loop.cc's joinBlobCrc32.
@@ -465,6 +467,12 @@ public:
         // counter moves where the wire put the new total: behind the attack that caused
         // it, not at decode (GitHub issue 44, bugs/069).
         kDudeHp,
+        kSkillResult,
+    };
+    struct SkillEvent {
+        unsigned char type;
+        unsigned int entryId;
+        std::vector<unsigned char> bytes;
     };
     struct PresEvent {
         PresKind kind;
@@ -489,6 +497,7 @@ public:
         int consoleChannel = kMsgChannelDefault; // kConsole — message-log style (msg_channel.h)
         int consoleSkillActor = 0; // optional gesture dependency, NOT the recipient
         unsigned int consoleQueuedAt = 0;
+        std::vector<SkillEvent> skillEvents; // one skill's fades, state and messages
         // kDeferredEvent — the parked state event, re-dispatched verbatim at drain.
         unsigned char defEvType = 0; // the EVENT_* type byte
         std::vector<unsigned char> defBytes; // its length-bounded payload, copied
@@ -943,10 +952,11 @@ public:
     // Yes while a fight is still being shown: something is queued or an attack is
     // playing, and either the fight is on or its end (or an earlier total, which this
     // one must not overtake) is still in the line. Outside a fight the queue only ever
-    // holds another actor's door, gesture or skill message, and a heal must not
-    // wait on that. Skill fades and their state deltas stay on the decode path.
+    // holds another actor's door, gesture or skill result, and unrelated HP must
+    // not wait on that. A skill result applies its own HP while its fade is black.
     bool dudeHpWaitsForPresentation() const
     {
+        if (_applyingSkillResult) return false;
         if (_presQueue.empty() && !clientCombatAnimActive()) {
             return false;
         }
@@ -978,6 +988,10 @@ public:
     // blow to be shown, which is what the parking is for.
     void screenPump()
     {
+        expireSkillCapture();
+        // The hidden world does not advance gestures. Release results without a
+        // fade over the modal; state and messages must not wait for it to close.
+        flushSkillResults(0);
         if (clientViewerActive() && !_presQueue.empty() && !clientCombatAnimActive()) {
             bool needsNoWorld = true;
             for (const PresEvent& e : _presQueue) {
@@ -1008,7 +1022,8 @@ public:
     {
         // Fidgets cannot hold a result hostage. A missing actor or a stuck
         // animation releases it too; the queue has its usual size bound.
-        if (ev.kind != PresKind::kConsole || ev.consoleSkillActor == 0
+        if ((ev.kind != PresKind::kConsole && ev.kind != PresKind::kSkillResult)
+            || ev.consoleSkillActor == 0
             || getTicksSince(ev.consoleQueuedAt) >= 12000) {
             return false;
         }
@@ -1022,6 +1037,8 @@ public:
         if (!clientViewerActive()) {
             return;
         }
+        expireSkillCapture();
+        flushSkillResults(0, true);
         tickCombatMoveAp();
         tickApBar(); // AFTER the per-hex tick, which owns the shown value while it runs
         rollDudeHp();
@@ -1051,9 +1068,6 @@ public:
             // released here in wire order, so an approach never glides over the turn
             // it belongs to. The blocks below keep the fight strictly sequential:
             const PresEvent& front = _presQueue.front();
-            if (skillMessageWaiting(front)) {
-                break;
-            }
             // (1) An attacker approaches by gliding into range; hold its attack until
             //     the participants stop PLAYABLE-gliding — else clientCombatAnimPlay
             //     would cancel the glide instantly and the approach would teleport.
@@ -1125,6 +1139,9 @@ public:
                 && clientAnimAnyPlayableActive()) {
                 break;
             }
+            if (skillMessageWaiting(_presQueue.front())) {
+                break;
+            }
             PresEvent ev = _presQueue.front();
             _presQueue.pop_front();
             clientAnimNotePresentationProgress(); // the queue drained an event = progress
@@ -1137,6 +1154,7 @@ public:
             case PresKind::kSfx: applySfx(ev.text); break;
             case PresKind::kMoveRelease: clientAnimRelease(lookup(ev.moveNetId), ev.moveHops); break;
             case PresKind::kDudeHp: applyDudeHp(ev.hpNetId, ev.hpValue); break;
+            case PresKind::kSkillResult: applySkillResult(ev, false); break;
             case PresKind::kDeferredEvent: {
                 // Re-dispatch verbatim through the SAME handler the decoder would have
                 // used. event() expects a reader bounded to exactly this payload, which
@@ -1186,6 +1204,178 @@ public:
         return clientCombatAnimActive() || !_presQueue.empty();
     }
 
+    PresEvent _skillCapture{};
+    size_t _skillCaptureBytes = 0;
+    bool _applyingSkillResult = false;
+    bool _skipSkillFade = false;
+
+    // Same-object updates cannot overtake a parked result. Global state has a
+    // separate key space; cosmetic events have no state dependency.
+    static int skillStateKey(unsigned char type, Reader r)
+    {
+        switch (type) {
+        case EVENT_SPAWN: case EVENT_MOVE: case EVENT_DESTROY:
+        case EVENT_CONNECT: case EVENT_DISCONNECT: case EVENT_OBJECT_DELTA:
+            return r.remaining() >= 4 ? r.i32() : 0;
+        case EVENT_WORLD_DELTA: case EVENT_GVAR_DELTA: case EVENT_PLAYER_SHEET:
+            return -int(type);
+        default: return 0;
+        }
+    }
+
+    static bool skillCanBuffer(unsigned char type)
+    {
+        switch (type) {
+        case EVENT_SPAWN: case EVENT_MOVE: case EVENT_DESTROY:
+        case EVENT_CONNECT: case EVENT_DISCONNECT: case EVENT_OBJECT_DELTA:
+        case EVENT_WORLD_DELTA: case EVENT_GVAR_DELTA: case EVENT_PLAYER_SHEET:
+        case EVENT_CONSOLE: case EVENT_FLOAT_TEXT: case EVENT_SFX: case EVENT_SFX_AT:
+        case EVENT_FADE_OUT: case EVENT_FADE_IN:
+            return true;
+        default: return false;
+        }
+    }
+
+    static bool skillTouches(const PresEvent& result, int key)
+    {
+        if (key == 0) return true;
+        for (const SkillEvent& ev : result.skillEvents) {
+            if (skillStateKey(ev.type, Reader(ev.bytes.data(), ev.bytes.size())) == key)
+                return true;
+        }
+        return false;
+    }
+
+    void applySkillResult(const PresEvent& result, bool interrupted)
+    {
+        bool wasApplying = _applyingSkillResult;
+        bool wasDeferred = _applyingDeferredEvent;
+        bool wasSkipping = _skipSkillFade;
+        unsigned int lastEntry = _lastEntryId;
+        unsigned int wasBlack = _fadeBlackSinceMs;
+        _applyingSkillResult = true;
+        _applyingDeferredEvent = true;
+        _skipSkillFade = interrupted;
+        for (const SkillEvent& ev : result.skillEvents) {
+            Reader r(ev.bytes.data(), ev.bytes.size());
+            event(ev.type, r, ev.entryId);
+        }
+        // Early skill returns (missing message data, for example) must not leave
+        // the actor's screen black. The RAII result boundary still closes them.
+        if (wasBlack == 0 && _fadeBlackSinceMs != 0) applyFade(false);
+        _lastEntryId = lastEntry;
+        _skipSkillFade = wasSkipping;
+        _applyingDeferredEvent = wasDeferred;
+        _applyingSkillResult = wasApplying;
+    }
+
+    void flushSkillResults(int key, bool expiredOnly = false)
+    {
+        for (;;) {
+            auto it = std::find_if(_presQueue.begin(), _presQueue.end(),
+                [key, expiredOnly](const PresEvent& ev) {
+                    return ev.kind == PresKind::kSkillResult && skillTouches(ev, key)
+                        && (!expiredOnly || getTicksSince(ev.consoleQueuedAt) >= 12000);
+                });
+            if (it == _presQueue.end()) break;
+            PresEvent result = std::move(*it);
+            _presQueue.erase(it); // replay can mutate the queue
+            applySkillResult(result, true);
+        }
+    }
+
+    void finishSkillCapture(bool interrupted)
+    {
+        if (_skillCapture.consoleSkillActor == 0) return;
+        PresEvent result = std::move(_skillCapture);
+        _skillCapture = PresEvent{};
+        _skillCaptureBytes = 0;
+        if (interrupted) {
+            applySkillResult(result, true);
+        } else {
+            // Bound total retained skill data, as well as each individual group.
+            size_t count = 0;
+            for (const PresEvent& ev : _presQueue)
+                if (ev.kind == PresKind::kSkillResult) ++count;
+            if (count >= 8) flushSkillResults(0);
+            enqueue(result);
+        }
+    }
+
+    void expireSkillCapture()
+    {
+        if (_skillCapture.consoleSkillActor != 0
+            && getTicksSince(_skillCapture.consoleQueuedAt) >= 12000)
+            finishSkillCapture(true);
+    }
+
+    void supersedeSkillWorldFields(Reader incoming)
+    {
+        unsigned int replaced = incoming.u16();
+        // The clock advances every beat. It must neither release a heal early
+        // nor be rewound by that heal later. Keep only fields not superseded by
+        // the newer delta (e.g. a light change can still remain under the fade).
+        for (PresEvent& result : _presQueue) {
+            if (result.kind != PresKind::kSkillResult) continue;
+            for (SkillEvent& ev : result.skillEvents) {
+                if (ev.type != EVENT_WORLD_DELTA) continue;
+                Reader old(ev.bytes.data(), ev.bytes.size());
+                unsigned int mask = old.u16();
+                unsigned int retained = mask & ~replaced;
+                std::vector<unsigned char> bytes{ (unsigned char)retained, 0 };
+                for (unsigned int bit : { WORLD_DELTA_GAMETIME, WORLD_DELTA_LIGHT }) {
+                    if ((mask & bit) == 0) continue;
+                    if ((retained & bit) != 0 && old.remaining() >= 4)
+                        bytes.insert(bytes.end(), old.here(), old.here() + 4);
+                    old.skip(4);
+                }
+                ev.bytes = std::move(bytes);
+            }
+        }
+    }
+
+    bool bufferSkillEvent(unsigned char type, Reader& r, unsigned int entryId)
+    {
+        if (_applyingSkillResult || _applyingDeferredEvent || !clientViewerActive()) return false;
+        expireSkillCapture();
+        if (type == EVENT_SKILL_RESULT_BEGIN) {
+            finishSkillCapture(true);
+            int actor = r.i32();
+            if (!r.overflow() && actor > 0) {
+                _skillCapture.kind = PresKind::kSkillResult;
+                _skillCapture.consoleSkillActor = actor;
+                _skillCapture.consoleQueuedAt = getTicks();
+            }
+            return true;
+        }
+        if (type == EVENT_SKILL_RESULT_END) {
+            finishSkillCapture(false);
+            return true;
+        }
+        int key = skillStateKey(type, r);
+        if (!skillCanBuffer(type)) {
+            // A scene change, combat, dialog or other control barrier must still
+            // interrupt a hidden world. Never hold the subsequent wire stream.
+            finishSkillCapture(true);
+            if (type != EVENT_PRES_SEQ) flushSkillResults(0);
+            return false;
+        }
+        if (type == EVENT_WORLD_DELTA) supersedeSkillWorldFields(r);
+        else if (key != 0) flushSkillResults(key);
+        if (_skillCapture.consoleSkillActor == 0) return false;
+        if (_skillCaptureBytes + r.remaining() > 65536
+            || _skillCapture.skillEvents.size() >= 256) {
+            finishSkillCapture(true);
+            return false;
+        }
+        SkillEvent ev{ type, entryId, {} };
+        ev.bytes.assign(r.here(), r.here() + r.remaining());
+        _skillCaptureBytes += r.remaining();
+        r.skip(r.remaining());
+        _skillCapture.skillEvents.push_back(std::move(ev));
+        return true;
+    }
+
     // Apply one length-prefixed event payload (the reader is positioned at the
     // event's first byte and bounded to its len by the caller).
     void event(unsigned char type, Reader& r, unsigned int entryId)
@@ -1231,6 +1421,7 @@ public:
             && type != EVENT_CONSOLE && type != EVENT_ACCOUNT_STATE) {
             return;
         }
+        if (bufferSkillEvent(type, r, entryId)) return;
         // ►► §12.2 FEEDER — the ONE rule: a state event addressing a presentation-
         // entangled netId rides _presQueue in wire order instead of applying here on the
         // decode clock. These five are the object-lifecycle/state family, i.e. the events
@@ -1418,6 +1609,12 @@ private:
             return;
         }
         for (auto it = _presQueue.begin(); it != _presQueue.end(); ++it) {
+            if (it->kind == PresKind::kSkillResult) {
+                PresEvent result = std::move(*it);
+                _presQueue.erase(it);
+                applySkillResult(result, true);
+                return;
+            }
             // ►►►► NEVER DROP A PARKED STATE EVENT (§12.6 trap 1). Dropping one is not a
             // lost caption — it is a lost DESTROY, i.e. a permanently phantom object: the
             // exact bug §12 exists to fix, reintroduced under backlog. It is also a
@@ -2052,6 +2249,8 @@ private:
                 }
             }
             _presQueue.clear();
+            _skillCapture = PresEvent{};
+            _skillCaptureBytes = 0;
             // Parked state events die with the queue here, which is CORRECT — the blob is
             // truth for the new world, so a deferred DISCONNECT addressing the old one has
             // nothing left to destroy. The matching _pendingAdopts.clear() rides the
@@ -3398,6 +3597,8 @@ private:
         // a REAL combat reset — first join or a map transition — never on a mid-fight
         // re-sync (that path keeps the framing; see onBlobEnd).
         _presQueue.clear();
+        _skillCapture = PresEvent{};
+        _skillCaptureBytes = 0;
         _pendingDudeTick = 0;
         _dudeApDeferring = false;
         combatViewerSetTurnObject(nullptr); // the world it pointed into is gone
@@ -4432,7 +4633,7 @@ private:
             _inCombat ? 1 : 0, channel,
             ((_inCombat || skillActor != 0) && channel != kMsgChannelRefusal) ? "QUEUED (paced)" : "shown now",
             text.c_str());
-        if ((_inCombat || skillActor != 0) && channel != kMsgChannelRefusal) {
+        if (!_applyingSkillResult && (_inCombat || skillActor != 0) && channel != kMsgChannelRefusal) {
             PresEvent e;
             e.kind = PresKind::kConsole;
             e.text = text;
@@ -4851,6 +5052,12 @@ private:
         }
         if (actorNetId != 0 && (gDude == nullptr || actorNetId != gDude->netId)) {
             return; // somebody else's time is passing
+        }
+        if (_applyingSkillResult) {
+            if (_skipSkillFade) return;
+            // Adopt the skill's own HP under black, not on the next world tick
+            // after the fade has already exposed it.
+            if (!toBlack) reconcileDudeHp();
         }
 
         // Collapse CONSECUTIVE duplicates only (black over black, in over in): those

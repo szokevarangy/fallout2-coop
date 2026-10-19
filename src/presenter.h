@@ -26,7 +26,7 @@ struct PlayerRosterRow {
     bool alive;
 };
 
-// Optional console-message dependency; never delays state or fade events.
+// Dedicated skill result boundary. Local presenters keep their synchronous path.
 int presenterSkillMessageActor();
 class PresenterSkillMessageScope {
 public:
@@ -849,6 +849,8 @@ public:
 
     virtual void screenFadeOut(int actorNetId = 0) {}
     virtual void screenFadeIn(int actorNetId = 0) {}
+    virtual void skillResultBegin(int actorNetId) {}
+    virtual void skillResultEnd() {}
 
     // The scripted cutscene input lock (op_game_ui_disable / _enable, 0x8133/0x8134):
     // mouse, keyboard and the interface bar go away so the player watches instead of

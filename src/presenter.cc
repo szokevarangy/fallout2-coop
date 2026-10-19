@@ -49,10 +49,12 @@ PresenterSkillMessageScope::PresenterSkillMessageScope(int actorNetId)
     : _previous(gSkillMessageActorNetId)
 {
     gSkillMessageActorNetId = actorNetId;
+    if (_previous == 0 && actorNetId != 0) presenter()->skillResultBegin(actorNetId);
 }
 
 PresenterSkillMessageScope::~PresenterSkillMessageScope()
 {
+    if (_previous == 0 && gSkillMessageActorNetId != 0) presenter()->skillResultEnd();
     gSkillMessageActorNetId = _previous;
 }
 
