@@ -41,6 +41,21 @@ void presenterSetEmissionsSuppressed(bool suppressed)
 
 static int gNarrationActorNetId = 0;
 
+static int gSkillMessageActorNetId = 0;
+
+int presenterSkillMessageActor() { return gSkillMessageActorNetId; }
+
+PresenterSkillMessageScope::PresenterSkillMessageScope(int actorNetId)
+    : _previous(gSkillMessageActorNetId)
+{
+    gSkillMessageActorNetId = actorNetId;
+}
+
+PresenterSkillMessageScope::~PresenterSkillMessageScope()
+{
+    gSkillMessageActorNetId = _previous;
+}
+
 int presenterNarrationAddress()
 {
     return gNarrationActorNetId;

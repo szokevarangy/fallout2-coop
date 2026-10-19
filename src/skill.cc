@@ -695,6 +695,12 @@ static void _show_skill_use_messages(Object* obj, int skill, Object* target, int
 // 0x4AAD08
 int skillUse(Object* obj, Object* target, int skill, int criticalChanceModifier)
 {
+    // Only dedicated medical/repair results carry a gesture dependency. Revive
+    // and the local presenter retain their existing paths.
+    PresenterSkillMessageScope messageScope(serverDedicatedActive()
+            && (skill == SKILL_FIRST_AID || skill == SKILL_DOCTOR || skill == SKILL_REPAIR)
+            && !critterIsDead(target)
+        ? obj->netId : 0);
     MessageListItem messageListItem;
     char text[60];
 

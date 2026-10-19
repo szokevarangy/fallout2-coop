@@ -487,6 +487,8 @@ public:
         std::vector<int> seqReserved;
         std::string text; // kConsole / kFloat / kSfx
         int consoleChannel = kMsgChannelDefault; // kConsole — message-log style (msg_channel.h)
+        int consoleSkillActor = 0; // optional gesture dependency, NOT the recipient
+        unsigned int consoleQueuedAt = 0;
         // kDeferredEvent — the parked state event, re-dispatched verbatim at drain.
         unsigned char defEvType = 0; // the EVENT_* type byte
         std::vector<unsigned char> defBytes; // its length-bounded payload, copied
@@ -941,7 +943,8 @@ public:
     // Yes while a fight is still being shown: something is queued or an attack is
     // playing, and either the fight is on or its end (or an earlier total, which this
     // one must not overtake) is still in the line. Outside a fight the queue only ever
-    // holds another actor's door or gesture, and a heal must not wait on that.
+    // holds another actor's door, gesture or skill message, and a heal must not
+    // wait on that. Skill fades and their state deltas stay on the decode path.
     bool dudeHpWaitsForPresentation() const
     {
         if (_presQueue.empty() && !clientCombatAnimActive()) {
@@ -984,6 +987,9 @@ public:
                 }
             }
             while (needsNoWorld && !_presQueue.empty()) {
+                if (skillMessageWaiting(_presQueue.front())) {
+                    break;
+                }
                 PresEvent ev = _presQueue.front();
                 _presQueue.pop_front();
                 clientAnimNotePresentationProgress();
@@ -996,6 +1002,19 @@ public:
             }
         }
         rollDudeHp();
+    }
+
+    bool skillMessageWaiting(const PresEvent& ev)
+    {
+        // Fidgets cannot hold a result hostage. A missing actor or a stuck
+        // animation releases it too; the queue has its usual size bound.
+        if (ev.kind != PresKind::kConsole || ev.consoleSkillActor == 0
+            || getTicksSince(ev.consoleQueuedAt) >= 12000) {
+            return false;
+        }
+        Object* actor = lookup(ev.consoleSkillActor);
+        return actor != nullptr && (animationIsBusyIgnoringFidgets(actor)
+            || clientAnimPlayableActiveFor(actor));
     }
 
     void presentationPump()
@@ -1032,6 +1051,9 @@ public:
             // released here in wire order, so an approach never glides over the turn
             // it belongs to. The blocks below keep the fight strictly sequential:
             const PresEvent& front = _presQueue.front();
+            if (skillMessageWaiting(front)) {
+                break;
+            }
             // (1) An attacker approaches by gliding into range; hold its attack until
             //     the participants stop PLAYABLE-gliding — else clientCombatAnimPlay
             //     would cancel the glide instantly and the approach would teleport.
@@ -4381,6 +4403,7 @@ private:
         // default channel — which is every line the engine emitted before channels
         // existed — so the same remaining() test, one field further along.
         int channel = r.remaining() >= 4 ? r.i32() : kMsgChannelDefault;
+        int skillActor = r.remaining() >= 4 ? r.i32() : 0;
         if (!clientViewerActive()) return;
         if (actorNetId != 0 && (gDude == nullptr || actorNetId != gDude->netId)) {
             return; // somebody else's refusal — nothing happened, so show nothing
@@ -4407,13 +4430,15 @@ private:
         // over from the fight we just walked out of) is enqueued and then thrown away.
         fprintf(stderr, "[cons] rx inCombat=%d channel=%d -> %s: \"%.60s\"\n",
             _inCombat ? 1 : 0, channel,
-            (_inCombat && channel != kMsgChannelRefusal) ? "QUEUED (paced)" : "shown now",
+            ((_inCombat || skillActor != 0) && channel != kMsgChannelRefusal) ? "QUEUED (paced)" : "shown now",
             text.c_str());
-        if (_inCombat && channel != kMsgChannelRefusal) {
+        if ((_inCombat || skillActor != 0) && channel != kMsgChannelRefusal) {
             PresEvent e;
             e.kind = PresKind::kConsole;
             e.text = text;
             e.consoleChannel = channel;
+            e.consoleSkillActor = skillActor;
+            e.consoleQueuedAt = getTicks();
             enqueue(e);
         } else {
             applyConsole(text, channel);

@@ -1407,6 +1407,11 @@ public:
         }
         beginEvent(EVENT_CONSOLE, 0);
         putString(text);
+        if (presenterSkillMessageActor() != 0) {
+            putI32(0); // broadcast recipient
+            putI32(kMsgChannelDefault);
+            putI32(presenterSkillMessageActor());
+        }
         endEvent();
     }
 
@@ -1426,6 +1431,10 @@ public:
         beginEvent(EVENT_CONSOLE, 0);
         putString(text);
         putI32(actorNetId); // TRAILING: absent on broadcast, read only if bytes remain
+        if (presenterSkillMessageActor() != 0) {
+            putI32(kMsgChannelDefault);
+            putI32(presenterSkillMessageActor());
+        }
         endEvent();
     }
 
@@ -1450,6 +1459,7 @@ public:
         putString(text);
         putI32(actorNetId);
         putI32(channel);
+        if (presenterSkillMessageActor() != 0) putI32(presenterSkillMessageActor());
         endEvent();
     }
 

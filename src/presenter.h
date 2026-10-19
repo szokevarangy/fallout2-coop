@@ -26,6 +26,18 @@ struct PlayerRosterRow {
     bool alive;
 };
 
+// Optional console-message dependency; never delays state or fade events.
+int presenterSkillMessageActor();
+class PresenterSkillMessageScope {
+public:
+    explicit PresenterSkillMessageScope(int actorNetId);
+    ~PresenterSkillMessageScope();
+    PresenterSkillMessageScope(const PresenterSkillMessageScope&) = delete;
+    PresenterSkillMessageScope& operator=(const PresenterSkillMessageScope&) = delete;
+private:
+    int _previous;
+};
+
 // ►► Whose point of view world narration is currently being rendered from, as an
 // actor netId; 0 = nobody in particular, i.e. broadcast (single-player, and every
 // call site that predates this). Read by Presenter::consoleNarration.
